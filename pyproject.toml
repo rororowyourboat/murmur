@@ -1,0 +1,17 @@
+[project]
+name = "recorder"
+version = "0.1.0"
+description = "Record system audio from meetings (Zoom, Google Meet, etc.) via PipeWire + FFmpeg"
+readme = "README.md"
+requires-python = ">=3.14"
+dependencies = [
+    "click>=8.3.1",
+    "rich>=14.3.3",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project.scripts]
+recorder = "recorder:cli"
