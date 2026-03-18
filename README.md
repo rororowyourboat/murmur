@@ -1,4 +1,4 @@
-# recorder
+# murmur
 
 Record system audio from meetings (Zoom, Google Meet, Teams, etc.) on Linux using PipeWire + FFmpeg.
 
@@ -33,37 +33,37 @@ No-fuss local meeting recording — hit a keyboard shortcut when a call starts, 
 
 ```bash
 # Install globally as a CLI tool
-uv tool install /path/to/recorder
+uv tool install /path/to/murmur
 
 # Or run from the project directory
-uv run recorder --help
+uv run murmur --help
 ```
 
 ## Usage
 
 ```bash
 # List audio output devices
-recorder devices
+murmur devices
 
 # Start recording (interactive, Ctrl+C to stop)
-recorder start
-recorder start --tag standup --format mp3
+murmur start
+murmur start --tag standup --format mp3
 
 # Toggle recording on/off (for keyboard shortcuts)
-recorder toggle
+murmur toggle
 
 # Check recording status
-recorder status
+murmur status
 
 # List saved recordings
-recorder list
+murmur list
 ```
 
 ## Keyboard shortcut
 
 **Super+Shift+R** toggles recording on/off with a desktop notification.
 
-Set up via GNOME custom shortcuts — runs `recorder toggle` in the background.
+Set up via GNOME custom shortcuts — runs `murmur toggle` in the background.
 
 ## Recordings
 

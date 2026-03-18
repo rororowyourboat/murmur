@@ -1,4 +1,4 @@
-"""Record system audio from meetings via PipeWire + FFmpeg."""
+"""Murmur — record system audio from meetings via PipeWire + FFmpeg."""
 
 from __future__ import annotations
 
@@ -17,7 +17,7 @@ from rich.table import Table
 console = Console()
 
 RECORDINGS_DIR = Path.home() / "Recordings" / "meetings"
-PID_FILE = Path.home() / ".cache" / "recorder" / "recorder.pid"
+PID_FILE = Path.home() / ".cache" / "murmur" / "murmur.pid"
 
 
 def get_pipewire_sinks() -> list[dict]:
@@ -128,7 +128,7 @@ def build_ffmpeg_cmd(
 
 @click.group()
 def cli():
-    """Record system audio from meetings (Zoom, Google Meet, etc.)."""
+    """Murmur — record system audio from meetings (Zoom, Google Meet, etc.)."""
     pass
 
 
@@ -325,7 +325,7 @@ def list_recordings():
 def _notify(title: str, body: str, urgency: str = "normal"):
     """Send a desktop notification via notify-send."""
     subprocess.run(
-        ["notify-send", f"--urgency={urgency}", "--app-name=Recorder", title, body],
+        ["notify-send", f"--urgency={urgency}", "--app-name=Murmur", title, body],
         capture_output=True,
     )
 
