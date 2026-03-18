@@ -169,10 +169,11 @@ def test_build_ffmpeg_cmd_dual_channel():
     assert len(i_indices) == 2
     assert cmd[i_indices[0] + 1] == "alsa_output.test.monitor"
     assert cmd[i_indices[1] + 1] == "alsa_input.mic"
-    # Should have -map for both streams
+    # Should use amerge filter to mix into stereo
+    assert "-filter_complex" in cmd
+    assert any("amerge" in v for v in cmd)
     assert "-map" in cmd
-    assert "0:a" in cmd
-    assert "1:a" in cmd
+    assert "[out]" in cmd
 
 
 def test_build_ffmpeg_cmd_dual_channel_codec():

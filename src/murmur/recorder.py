@@ -147,8 +147,9 @@ def build_ffmpeg_cmd(
 ) -> list[str]:
     """Build FFmpeg command for recording.
 
-    If mic_source is provided, records both system audio and mic as separate
-    streams in the same file (dual-channel).
+    If mic_source is provided, mixes system audio (left channel) and mic
+    (right channel) into a stereo file. This keeps compatibility with all
+    audio formats and lets diarization split channels later.
     """
     system_source = f"{monitor_source}.monitor"
 
@@ -160,15 +161,17 @@ def build_ffmpeg_cmd(
     if mic_source:
         # Input 1: microphone
         cmd += ["-f", "pulse", "-i", mic_source]
-        # Map both inputs as separate streams
-        cmd += ["-map", "0:a", "-map", "1:a"]
-        # Apply codec to all audio streams
-        codec = _codec_args(audio_format)
-        if codec:
-            cmd += codec
-    else:
-        cmd += _codec_args(audio_format)
+        # Mix into stereo: system=left, mic=right
+        cmd += [
+            "-filter_complex",
+            "[0:a][1:a]amerge=inputs=2[out]",
+            "-map",
+            "[out]",
+            "-ac",
+            "2",
+        ]
 
+    cmd += _codec_args(audio_format)
     cmd.append(str(output_path))
     return cmd
 
