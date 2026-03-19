@@ -145,6 +145,23 @@ hf_token = "hf_..."  # hugging face token for pyannote
 | **transcribe** | `murmur transcribe <file>` | Whisper transcription → `.txt` + `.srt` | `murmur[transcribe]` |
 | **diarize** | `murmur diarize <file>` | Speaker diarization → `.rttm` + `.diarized.txt` | `murmur[diarize]` |
 
+## Development
+
+```bash
+# Set up dev environment
+make install
+
+# Run all checks (lint + format + test)
+make check
+
+# Individual targets
+make lint          # ruff check
+make format        # ruff format (auto-fix)
+make format-check  # ruff format --check (CI mode)
+make test          # pytest
+make fix           # ruff check --fix
+```
+
 ## Roadmap
 
 - [ ] Automatic transcription (Whisper local / Deepgram API)

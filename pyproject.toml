@@ -25,7 +25,7 @@ all = [
     "murmur[tui]", "murmur[ai]", "murmur[transcribe]", "murmur[diarize]",
     "murmur[calendar]", "murmur[tasks]", "murmur[tasks-tw]",
 ]
-dev = ["murmur[all]", "pytest>=8.0", "ruff>=0.11", "pre-commit>=4.0"]
+dev = ["murmur[all]", "pytest>=8.0", "pytest-cov>=6.0", "mypy>=1.10", "bandit>=1.7", "ruff>=0.11", "pre-commit>=4.0"]
 
 [project.scripts]
 murmur = "murmur.cli:cli"
@@ -49,7 +49,26 @@ target-version = "py314"
 line-length = 99
 
 [tool.ruff.lint]
-select = ["E", "F", "I", "UP", "B", "SIM"]
+select = ["E", "F", "I", "UP", "B", "SIM", "S", "PT", "RUF"]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["S101", "S108"]
+"src/murmur/plugins/tui.py" = ["RUF012"]
+
+[tool.mypy]
+python_version = "3.14"
+warn_return_any = true
+warn_unused_configs = true
+ignore_missing_imports = true
+check_untyped_defs = true
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+addopts = "--cov=murmur --cov-report=term-missing"
+
+[tool.coverage.run]
+source = ["src/murmur"]
+
+[tool.coverage.report]
+fail_under = 20
+show_missing = true
