@@ -47,7 +47,7 @@ def _get_mic_streams() -> list[dict]:
     """
     try:
         result = subprocess.run(
-            ["pw-dump"],  # noqa: S603, S607
+            ["pw-dump"],  # noqa: S607
             capture_output=True,
             text=True,
             timeout=5,
