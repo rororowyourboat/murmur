@@ -33,6 +33,7 @@ tui = "murmur.plugins.tui:register"
 watch = "murmur.plugins.watch:register"
 memory = "murmur.plugins.memory:register"
 calendar = "murmur.plugins.calendar:register"
+tasks = "murmur.plugins.tasks:register"
 
 [build-system]
 requires = ["hatchling"]

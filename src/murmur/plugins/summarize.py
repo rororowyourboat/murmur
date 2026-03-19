@@ -317,6 +317,12 @@ def register(cli):
         console.print(f"\n[bold green]Summary saved:[/bold green] {summary_path}")
         console.print(f"\n{summary}")
 
+        hooks.emit(
+            "summary_complete",
+            summary_path=str(summary_path),
+            source_file=str(transcript_path),
+        )
+
     # Auto-summarize on transcription_complete if configured
     cfg = get_section("summarize")
     if cfg.get("auto"):
@@ -335,5 +341,11 @@ def register(cli):
             summary_path = Path(transcript_path).with_suffix(".summary.md")
             summary_path.write_text(summary)
             console.print(f"[bold green]Auto-summary saved:[/bold green] {summary_path}")
+
+            hooks.emit(
+                "summary_complete",
+                summary_path=str(summary_path),
+                source_file=str(transcript_path),
+            )
 
         hooks.on("transcription_complete", _auto_summarize)
