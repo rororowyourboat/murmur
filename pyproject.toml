@@ -20,7 +20,7 @@ calendar = [
     "google-auth-httplib2>=0.2",
 ]
 all = ["murmur[tui]", "murmur[ai]", "murmur[transcribe]", "murmur[diarize]", "murmur[calendar]"]
-dev = ["murmur[all]", "pytest>=8.0", "ruff>=0.11", "pre-commit>=4.0"]
+dev = ["murmur[all]", "pytest>=8.0", "pytest-cov>=6.0", "ruff>=0.11", "pre-commit>=4.0"]
 
 [project.scripts]
 murmur = "murmur.cli:cli"
@@ -47,3 +47,11 @@ select = ["E", "F", "I", "UP", "B", "SIM"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+addopts = "--cov=murmur --cov-report=term-missing"
+
+[tool.coverage.run]
+source = ["src/murmur"]
+
+[tool.coverage.report]
+fail_under = 25
+show_missing = true
