@@ -4,3 +4,6 @@ __pycache__/
 *.egg-info/
 dist/
 build/
+.env
+google_credentials.json
+google_token.json

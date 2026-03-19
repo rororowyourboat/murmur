@@ -208,15 +208,15 @@ def _build_app(audio_format: str):
             yield RecordingStatus(id="status-bar")
             with Horizontal(id="main"):
                 yield DataTable(id="recordings-table", cursor_type="row")
-                with TabbedContent(id="detail", initial="transcript"):
+                with TabbedContent(id="detail", initial="info"):
+                    with TabPane("Info", id="info"):
+                        yield RichLog(id="log-info", markup=True, wrap=True)
                     with TabPane("Transcript", id="transcript"):
                         yield RichLog(id="log-transcript", markup=True, wrap=True)
                     with TabPane("Summary", id="summary"):
                         yield RichLog(id="log-summary", markup=True, wrap=True)
                     with TabPane("Diarization", id="diarization"):
                         yield RichLog(id="log-diarization", markup=True, wrap=True)
-                    with TabPane("Info", id="info"):
-                        yield RichLog(id="log-info", markup=True, wrap=True)
             yield Footer()
 
         def on_mount(self) -> None:
@@ -434,28 +434,26 @@ def _build_app(audio_format: str):
         async def _run_summarize(self, rec: Path) -> None:
             """Run summarization in a background worker."""
             try:
-                from murmur.plugins.summarize import _find_transcript, _ollama_generate
+                from murmur.plugins.summarize import (
+                    DEFAULT_MODEL,
+                    _find_transcript,
+                    _llm_generate,
+                )
 
                 cfg = get_section("summarize")
-                model_name = cfg.get("model", "llama3")
+                model_name = cfg.get("model", DEFAULT_MODEL)
                 transcript_path = _find_transcript(rec)
                 transcript = transcript_path.read_text()
                 if not transcript.strip():
                     self.notify("Transcript is empty", severity="warning")
                     return
-                prompt = (
-                    "Summarize the following meeting transcript. "
-                    "Include key decisions, action items, and "
-                    "important discussion points.\n\n"
-                    f"{transcript}"
-                )
-                summary = await self._run_in_thread(_ollama_generate, model_name, prompt)
+                summary = await self._run_in_thread(_llm_generate, model_name, transcript)
                 summary_path = transcript_path.with_suffix(".summary.md")
                 summary_path.write_text(summary)
                 self.notify(f"Summary ready: {summary_path.name}")
             except SystemExit:
                 self.notify(
-                    "Could not connect to Ollama. Is it running?",
+                    "LLM API call failed. Check API keys in .env",
                     severity="error",
                     timeout=8,
                 )
@@ -539,6 +537,19 @@ def register(cli: click.Group) -> None:
         help="Audio format for recordings started from TUI.",
     )
     def tui(audio_format: str):
-        """Live dashboard showing recordings, transcripts, and summaries."""
+        """Live dashboard showing recordings, transcripts, and summaries.
+
+        Requires: uv pip install murmur[tui]
+        """
+        try:
+            import textual  # noqa: F401
+        except ImportError:
+            from rich.console import Console
+
+            Console().print(
+                "[red]textual is not installed.[/red]\n"
+                "Install with: [cyan]uv pip install murmur[tui][/cyan]"
+            )
+            raise SystemExit(1) from None
         app_cls = _build_app(audio_format)
         app_cls().run()

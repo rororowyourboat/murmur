@@ -1,0 +1,22 @@
+# Murmur configuration — copy to ~/.config/murmur/config.toml
+
+[recording]
+output_dir = "~/Recordings/meetings"
+format = "flac"
+
+[watch]
+interval = 5
+auto_record = false
+apps = ["chrome", "firefox", "zoom", "teams", "slack", "discord"]
+
+[transcribe]
+auto = false
+model = "base"          # whisper model: tiny, base, small, medium, large-v3
+language = "en"
+
+[summarize]
+auto = false
+model = "gemini/gemini-3-flash-preview"   # any litellm model string
+
+[diarize]
+# hf_token = "hf_..."  # hugging face token for pyannote

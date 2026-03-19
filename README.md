@@ -32,8 +32,20 @@ No-fuss local meeting recording — hit a keyboard shortcut when a call starts, 
 ## Install
 
 ```bash
-# Install globally as a CLI tool
-uv tool install /path/to/murmur
+# Core only (recording, toggle, watch, devices)
+uv pip install murmur
+
+# With TUI dashboard
+uv pip install murmur[tui]
+
+# With AI summarization (DSPy + LiteLLM)
+uv pip install murmur[ai]
+
+# With transcription (faster-whisper)
+uv pip install murmur[transcribe]
+
+# Everything
+uv pip install murmur[all]
 
 # Or run from the project directory
 uv run murmur --help
@@ -127,10 +139,11 @@ hf_token = "hf_..."  # hugging face token for pyannote
 | Plugin | Command | What it does | Install |
 |---|---|---|---|
 | **watch** | `murmur watch` | Detect meeting apps using the mic, notify + auto-record | built-in |
-| **tui** | `murmur tui` | Live dashboard with keyboard controls (r/s/q) | built-in |
-| **transcribe** | `murmur transcribe <file>` | Whisper transcription → `.txt` + `.srt` | `uv pip install murmur[transcribe]` |
-| **summarize** | `murmur summarize <file>` | Ollama summarization → `.summary.md` | built-in (needs Ollama running) |
-| **diarize** | `murmur diarize <file>` | Speaker diarization → `.rttm` + `.diarized.txt` | `uv pip install murmur[diarize]` |
+| **memory** | `murmur memory` | Personal context for LLM summaries | built-in |
+| **tui** | `murmur tui` | Live dashboard with artifact viewer + generation | `murmur[tui]` |
+| **summarize** | `murmur summarize <file>` | DSPy structured summarization → `.summary.md` | `murmur[ai]` |
+| **transcribe** | `murmur transcribe <file>` | Whisper transcription → `.txt` + `.srt` | `murmur[transcribe]` |
+| **diarize** | `murmur diarize <file>` | Speaker diarization → `.rttm` + `.diarized.txt` | `murmur[diarize]` |
 
 ## Roadmap
 

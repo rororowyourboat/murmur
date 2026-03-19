@@ -7,15 +7,20 @@ requires-python = ">=3.14"
 dependencies = [
     "click>=8.3.1",
     "rich>=14.3.3",
-    "textual>=8.1.1",
 ]
 
 [project.optional-dependencies]
+tui = ["textual>=8.1.1"]
+ai = ["dspy>=3.1.3", "litellm>=1.82.4"]
 transcribe = ["faster-whisper>=1.0.0"]
-summarize = []
 diarize = ["pyannote-audio>=3.0", "torch"]
-all = ["murmur[transcribe]", "murmur[diarize]"]
-dev = ["pytest>=8.0", "ruff>=0.11", "pre-commit>=4.0"]
+calendar = [
+    "google-api-python-client>=2.0",
+    "google-auth-oauthlib>=1.0",
+    "google-auth-httplib2>=0.2",
+]
+all = ["murmur[tui]", "murmur[ai]", "murmur[transcribe]", "murmur[diarize]", "murmur[calendar]"]
+dev = ["murmur[all]", "pytest>=8.0", "ruff>=0.11", "pre-commit>=4.0"]
 
 [project.scripts]
 murmur = "murmur.cli:cli"
@@ -26,6 +31,8 @@ summarize = "murmur.plugins.summarize:register"
 diarize = "murmur.plugins.diarize:register"
 tui = "murmur.plugins.tui:register"
 watch = "murmur.plugins.watch:register"
+memory = "murmur.plugins.memory:register"
+calendar = "murmur.plugins.calendar:register"
 
 [build-system]
 requires = ["hatchling"]
