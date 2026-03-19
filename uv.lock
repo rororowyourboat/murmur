@@ -1321,6 +1321,7 @@ all = [
     { name = "google-auth-oauthlib" },
     { name = "litellm" },
     { name = "pyannote-audio" },
+    { name = "tasklib" },
     { name = "textual" },
     { name = "torch" },
 ]
@@ -1340,12 +1341,20 @@ dev = [
     { name = "pyannote-audio" },
     { name = "pytest" },
     { name = "ruff" },
+    { name = "tasklib" },
     { name = "textual" },
     { name = "torch" },
 ]
 diarize = [
     { name = "pyannote-audio" },
     { name = "torch" },
+]
+tasks = [
+    { name = "dspy" },
+    { name = "litellm" },
+]
+tasks-tw = [
+    { name = "tasklib" },
 ]
 transcribe = [
     { name = "faster-whisper" },
@@ -1364,9 +1373,12 @@ requires-dist = [
     { name = "google-auth-oauthlib", marker = "extra == 'calendar'", specifier = ">=1.0" },
     { name = "litellm", marker = "extra == 'ai'", specifier = ">=1.82.4" },
     { name = "murmur", extras = ["ai"], marker = "extra == 'all'" },
+    { name = "murmur", extras = ["ai"], marker = "extra == 'tasks'" },
     { name = "murmur", extras = ["all"], marker = "extra == 'dev'" },
     { name = "murmur", extras = ["calendar"], marker = "extra == 'all'" },
     { name = "murmur", extras = ["diarize"], marker = "extra == 'all'" },
+    { name = "murmur", extras = ["tasks"], marker = "extra == 'all'" },
+    { name = "murmur", extras = ["tasks-tw"], marker = "extra == 'all'" },
     { name = "murmur", extras = ["transcribe"], marker = "extra == 'all'" },
     { name = "murmur", extras = ["tui"], marker = "extra == 'all'" },
     { name = "pre-commit", marker = "extra == 'dev'", specifier = ">=4.0" },
@@ -1374,10 +1386,11 @@ requires-dist = [
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.0" },
     { name = "rich", specifier = ">=14.3.3" },
     { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.11" },
+    { name = "tasklib", marker = "extra == 'tasks-tw'", specifier = ">=2.0" },
     { name = "textual", marker = "extra == 'tui'", specifier = ">=8.1.1" },
     { name = "torch", marker = "extra == 'diarize'" },
 ]
-provides-extras = ["tui", "ai", "transcribe", "diarize", "calendar", "all", "dev"]
+provides-extras = ["tui", "ai", "transcribe", "diarize", "calendar", "tasks", "tasks-tw", "all", "dev"]
 
 [[package]]
 name = "networkx"
@@ -2578,6 +2591,12 @@ sdist = { url = "https://files.pythonhosted.org/packages/83/d3/803453b36afefb7c2
 wheels = [
     { url = "https://files.pythonhosted.org/packages/a2/09/77d55d46fd61b4a135c444fc97158ef34a095e5681d0a6c10b75bf356191/sympy-1.14.0-py3-none-any.whl", hash = "sha256:e091cc3e99d2141a0ba2847328f5479b05d94a6635cb96148ccb3f34671bd8f5", size = 6299353, upload-time = "2025-04-27T18:04:59.103Z" },
 ]
+
+[[package]]
+name = "tasklib"
+version = "2.5.1"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/3e/50/3e876f39e31bad8783fd3fe117577cbf1dde836e161f8446631bde71aeb4/tasklib-2.5.1.tar.gz", hash = "sha256:5ccd731b52636dd10457a8b8d858cb0d026ffaab1e3e751baf791bf803e37d7b", size = 23805, upload-time = "2022-11-17T02:48:09.446Z" }
 
 [[package]]
 name = "tenacity"

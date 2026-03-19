@@ -68,7 +68,7 @@ def _parse_wpctl_section(output: str, section_name: str) -> list[dict]:
 
 def _get_wpctl_status() -> str:
     """Run wpctl status and return stdout. Exits on failure."""
-    result = subprocess.run(["wpctl", "status"], capture_output=True, text=True)
+    result = subprocess.run(["wpctl", "status"], capture_output=True, text=True)  # noqa: S603, S607
     if result.returncode != 0:
         console.print("[red]Error: wpctl not available. Is PipeWire running?[/red]")
         sys.exit(1)
@@ -106,7 +106,7 @@ def get_default_source_id() -> int | None:
 def get_node_name(node_id: int) -> str | None:
     """Get the PipeWire node name for any node ID (sink or source)."""
     result = subprocess.run(
-        ["wpctl", "inspect", str(node_id)],
+        ["wpctl", "inspect", str(node_id)],  # noqa: S603, S607
         capture_output=True,
         text=True,
     )
@@ -179,7 +179,7 @@ def build_ffmpeg_cmd(
 def notify(title: str, body: str, urgency: str = "normal"):
     """Send a desktop notification via notify-send."""
     subprocess.run(
-        ["notify-send", f"--urgency={urgency}", "--app-name=Murmur", title, body],
+        ["notify-send", f"--urgency={urgency}", "--app-name=Murmur", title, body],  # noqa: S603, S607
         capture_output=True,
     )
 
@@ -266,7 +266,7 @@ def record_foreground(
         meta["mic_source"] = mic_source
         meta["mic_id"] = mic_id
 
-    proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)  # noqa: S603
 
     PID_FILE.parent.mkdir(parents=True, exist_ok=True)
     PID_FILE.write_text(str(proc.pid))
@@ -339,7 +339,7 @@ def record_background(
     meta_path = output_path.with_suffix(".json")
     meta_path.write_text(json.dumps(meta, indent=2))
 
-    proc = subprocess.Popen(
+    proc = subprocess.Popen(  # noqa: S603
         cmd,
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,

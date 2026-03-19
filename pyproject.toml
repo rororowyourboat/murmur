@@ -19,7 +19,12 @@ calendar = [
     "google-auth-oauthlib>=1.0",
     "google-auth-httplib2>=0.2",
 ]
-all = ["murmur[tui]", "murmur[ai]", "murmur[transcribe]", "murmur[diarize]", "murmur[calendar]"]
+tasks = ["murmur[ai]"]
+tasks-tw = ["tasklib>=2.0"]
+all = [
+    "murmur[tui]", "murmur[ai]", "murmur[transcribe]", "murmur[diarize]",
+    "murmur[calendar]", "murmur[tasks]", "murmur[tasks-tw]",
+]
 dev = ["murmur[all]", "pytest>=8.0", "ruff>=0.11", "pre-commit>=4.0"]
 
 [project.scripts]
@@ -33,6 +38,7 @@ tui = "murmur.plugins.tui:register"
 watch = "murmur.plugins.watch:register"
 memory = "murmur.plugins.memory:register"
 calendar = "murmur.plugins.calendar:register"
+tasks = "murmur.plugins.tasks:register"
 
 [build-system]
 requires = ["hatchling"]
