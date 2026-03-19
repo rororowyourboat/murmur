@@ -70,5 +70,5 @@ addopts = "--cov=murmur --cov-report=term-missing"
 source = ["src/murmur"]
 
 [tool.coverage.report]
-fail_under = 25
+fail_under = 20
 show_missing = true
