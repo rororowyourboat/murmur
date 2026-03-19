@@ -7,3 +7,4 @@ build/
 .env
 google_credentials.json
 google_token.json
+.coverage
