@@ -69,7 +69,7 @@ def register(cli: click.Group) -> None:
             console.print(f"[green]Created[/green] {MEMORY_PATH} with template.")
 
         editor = os.environ.get("EDITOR", "nano")
-        subprocess.run([editor, str(MEMORY_PATH)])
+        subprocess.run([editor, str(MEMORY_PATH)])  # noqa: S603, S607
 
     @memory.command()
     def path():

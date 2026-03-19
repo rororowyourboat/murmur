@@ -167,13 +167,27 @@ def _get_calendar_context(file_path):
         event = match_recording_to_event(recording_time)
         if event:
             return event_to_context(event)
-    except Exception:
+    except Exception:  # noqa: S110
         pass
     return None
 
 
+def _get_task_context():
+    """Load task_context.md if it exists and export_context is enabled."""
+    cfg = get_section("tasks")
+    if not cfg.get("export_context"):
+        return None
+
+    task_context_path = Path.home() / ".config" / "murmur" / "task_context.md"
+    if not task_context_path.exists():
+        return None
+
+    content = task_context_path.read_text().strip()
+    return content if content else None
+
+
 def _get_system_prompt(file_path=None):
-    """Build system prompt from base + memory + calendar context."""
+    """Build system prompt from base + memory + calendar + task context."""
     from murmur.plugins.memory import load_memory
 
     parts = [SYSTEM_PROMPT]
@@ -193,6 +207,15 @@ def _get_system_prompt(file_path=None):
                 "calendar. Use it to identify speakers and understand the "
                 "meeting's purpose:\n\n" + cal_context
             )
+
+    # Append task context if configured
+    task_context = _get_task_context()
+    if task_context:
+        parts.append(
+            "The following open tasks are currently tracked. Use this context "
+            "to identify which tasks were discussed, updated, or resolved "
+            "during the meeting. Flag any new tasks that should be created:\n\n" + task_context
+        )
 
     return "\n\n".join(parts)
 
