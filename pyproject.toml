@@ -7,6 +7,7 @@ requires-python = ">=3.14"
 dependencies = [
     "click>=8.3.1",
     "rich>=14.3.3",
+    "textual>=8.1.1",
 ]
 
 [project.optional-dependencies]
@@ -24,6 +25,7 @@ transcribe = "murmur.plugins.transcribe:register"
 summarize = "murmur.plugins.summarize:register"
 diarize = "murmur.plugins.diarize:register"
 tui = "murmur.plugins.tui:register"
+watch = "murmur.plugins.watch:register"
 
 [build-system]
 requires = ["hatchling"]

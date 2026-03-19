@@ -15,22 +15,28 @@ from murmur.config import get_section
 
 console = Console()
 
-OLLAMA_URL = "http://localhost:11434/api/generate"
+DEFAULT_OLLAMA_URL = "http://localhost:11434"
 
 AUDIO_EXTENSIONS = {".flac", ".mp3", ".wav", ".ogg", ".m4a", ".opus"}
 
 
+def _ollama_base_url() -> str:
+    cfg = get_section("summarize")
+    return cfg.get("ollama_url", DEFAULT_OLLAMA_URL).rstrip("/")
+
+
 def _ollama_generate(model: str, prompt: str) -> str:
     """Call the Ollama generate API and return the full response text."""
+    url = f"{_ollama_base_url()}/api/generate"
     payload = json.dumps({"model": model, "prompt": prompt, "stream": False}).encode()
-    req = Request(OLLAMA_URL, data=payload, headers={"Content-Type": "application/json"})
+    req = Request(url, data=payload, headers={"Content-Type": "application/json"})
     try:
         with urlopen(req) as resp:
             data = json.loads(resp.read().decode())
             return data.get("response", "")
     except URLError as e:
         console.print(
-            f"[red]Could not connect to Ollama at {OLLAMA_URL}.[/red]\n"
+            f"[red]Could not connect to Ollama at {url}.[/red]\n"
             f"Make sure Ollama is running: [cyan]ollama serve[/cyan]\n"
             f"Error: {e}"
         )
