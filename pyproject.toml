@@ -11,7 +11,7 @@ dependencies = [
 
 [project.optional-dependencies]
 tui = ["textual>=8.1.1"]
-ai = ["dspy>=3.1.3", "litellm>=1.82.4"]
+ai = ["dspy>=3.1.3", "litellm==1.82.4"]
 transcribe = ["faster-whisper>=1.0.0"]
 diarize = ["pyannote-audio>=3.0", "torch"]
 calendar = [
@@ -43,6 +43,13 @@ tasks = "murmur.plugins.tasks:register"
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
+
+[tool.uv]
+# CVE-2025-69872: diskcache <=5.6.3 has unsafe pickle deserialization.
+# No patched version on PyPI yet; override to pull fix from upstream master.
+override-dependencies = [
+    "diskcache @ git+https://github.com/grantjenks/python-diskcache.git@master",
+]
 
 [tool.ruff]
 target-version = "py314"
