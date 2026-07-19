@@ -9,7 +9,7 @@ import click
 from click.testing import CliRunner
 
 from murmur.artifacts import ArtifactStore
-from murmur.plugins import diarize, summarize, transcribe, tui
+from murmur.plugins import diarize, summarize, tasks, transcribe, tui
 from murmur.plugins.transcribe import _format_srt_time
 
 runner = CliRunner()
@@ -48,6 +48,15 @@ def test_tui_registers_command():
     grp = _make_group()
     tui.register(grp)
     assert "tui" in [c for c in grp.commands]
+
+
+def test_task_ingest_is_preview_first_with_explicit_approval():
+    grp = _make_group()
+    tasks.register(grp)
+    ingest = grp.commands["tasks"].commands["ingest"]
+    param_names = {parameter.name for parameter in ingest.params}
+    assert "approve" in param_names
+    assert "dry_run" not in param_names
 
 
 def test_transcribe_missing_dep():
@@ -269,11 +278,30 @@ def test_summary_persists_and_skips_valid_completed_output(tmp_path):
     transcript_path = store.write_text("transcript.txt", "A useful meeting transcript")
     store.register_artifact("transcript_text", transcript_path, kind="transcript")
 
-    with patch.object(summarize, "_llm_generate", return_value="# Summary") as generate:
+    candidate = {
+        "title": "Useful meeting",
+        "attendees": [],
+        "executive_summary": [
+            {"text": "The meeting was useful.", "segment_ids": ["legacy-000001"]}
+        ],
+        "topics": [],
+        "decisions": [],
+        "open_questions": [],
+        "action_items": [],
+    }
+    with patch.object(summarize, "_llm_generate", return_value=candidate) as generate:
         first = summarize._summarize_file(transcript_path, "test/model")
         second = summarize._summarize_file(transcript_path, "test/model")
 
     assert first == second == store.path("summary.md")
-    assert first.read_text() == "# Summary"
+    assert first.read_text().startswith("# Useful meeting")
     generate.assert_called_once()
     assert store.jobs()["jobs"]["summarize:litellm"]["status"] == "complete"
+    assert store.path("summary.json").is_file()
+    assert store.path("transcript.cleaned.json").is_file()
+    assert transcript_path.read_text() == "A useful meeting transcript"
+    metadata = json.loads(store.path("summary.json").read_text())["metadata"]
+    assert metadata["model"] == "test/model"
+    assert metadata["prompt_version"] == 2
+    assert metadata["source_sha256"]
+    assert metadata["generated_at"]

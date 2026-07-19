@@ -3,12 +3,15 @@
 # NOTE: no `from __future__ import annotations` — DSPy needs real type objects
 # in Signature fields, not ForwardRef strings.
 
+import hashlib
+import json
+from datetime import UTC, datetime
 from pathlib import Path
 
 import click
 from rich.console import Console
 
-from murmur.artifacts import ArtifactStore
+from murmur.artifacts import ArtifactStore, fingerprint_file
 from murmur.config import get_section
 
 console = Console()
@@ -29,6 +32,8 @@ Rules:
 - Set priority based on urgency cues (ASAP, urgent, critical = high; nice to have = low).
 - If confidence is low (ambiguous language), set confidence below 0.7.
 - Preserve technical terms and project names exactly as spoken.
+- Classify each item as an explicit commitment or inferred suggestion.
+- Include exact source segment IDs. Do not create uncited tasks.
 """
 
 
@@ -81,6 +86,10 @@ def _build_extractor():
         )
         confidence: float = pydantic.Field(
             default=1.0, description="Confidence score 0.0-1.0 for ambiguous tasks"
+        )
+        commitment: str = pydantic.Field(default="inferred", description="explicit or inferred")
+        source_segment_ids: list[str] = pydantic.Field(
+            default_factory=list, description="Exact transcript segment IDs supporting this task"
         )
 
     class MeetingTaskAnalysis(pydantic.BaseModel):
@@ -202,14 +211,21 @@ def _find_input_file(file_path):
     """
     file_path = Path(file_path)
 
-    # If it's already a summary or transcript, use it directly
-    if file_path.suffix in (".md", ".txt"):
+    # Resolve rendered canonical summaries back to grounded JSON when available.
+    if file_path.name == "summary.md":
+        canonical_json = ArtifactStore.for_input(file_path).path("summary.json")
+        if canonical_json.exists():
+            return canonical_json
+
+    # If it's already another summary or transcript, use it directly.
+    if file_path.suffix in (".json", ".md", ".txt"):
         if file_path.exists():
             return file_path
         raise click.ClickException(f"File not found: {file_path}")
 
     store = ArtifactStore(file_path)
     for canonical in (
+        store.path("summary.json"),
         store.path("summary.md"),
         store.path("transcript.md"),
         store.path("transcript.txt"),
@@ -251,14 +267,69 @@ def _format_existing_tasks(tasks):
     return "\n".join(lines)
 
 
-def _extract_tasks(file_path, model=None, dry_run=False):
-    """Extract tasks from a file using DSPy.
+def _source_segment_ids(payload):
+    found = set()
+    if isinstance(payload, dict):
+        if isinstance(payload.get("id"), str) and "text" in payload and "start" in payload:
+            found.add(payload["id"])
+        segment_id = payload.get("segment_id")
+        if isinstance(segment_id, str):
+            found.add(segment_id)
+        segment_ids = payload.get("segment_ids", [])
+        if isinstance(segment_ids, list):
+            found.update(item for item in segment_ids if isinstance(item, str))
+        for value in payload.values():
+            found.update(_source_segment_ids(value))
+    elif isinstance(payload, list):
+        for value in payload:
+            found.update(_source_segment_ids(value))
+    return found
 
-    Returns the MeetingTaskAnalysis result from DSPy.
-    """
+
+def _preview_payload(input_path, model_name, analysis, rejected_count=0):
+    tasks = [
+        {
+            "title": task.title,
+            "owner": task.owner,
+            "deadline": task.deadline,
+            "priority": task.priority,
+            "project": task.project,
+            "source_excerpt": task.source_excerpt,
+            "confidence": task.confidence,
+            "commitment": task.commitment
+            if task.commitment in ("explicit", "inferred")
+            else "inferred",
+            "source_segment_ids": list(task.source_segment_ids),
+        }
+        for task in analysis.new_tasks
+    ]
+    identity = json.dumps(
+        {"source": str(input_path), "model": model_name, "tasks": tasks},
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    return {
+        "schema_version": 1,
+        "kind": "task_change_preview",
+        "preview_id": hashlib.sha256(identity.encode()).hexdigest()[:16],
+        "source": str(input_path),
+        "source_fingerprint": fingerprint_file(input_path),
+        "model": model_name,
+        "generated_at": datetime.now(UTC).isoformat(),
+        "approval_required": True,
+        "applied_at": None,
+        "new_tasks": tasks,
+        "rejected_uncited_tasks": rejected_count,
+        "blockers_raised": list(analysis.blockers_raised),
+        "blockers_resolved": list(analysis.blockers_resolved),
+    }
+
+
+def _extract_tasks(file_path, model=None):
+    """Extract and persist a reviewable preview without mutating a task backend."""
     import dspy
 
-    from murmur.plugins.tasks import Task, load_tasks, save_tasks
+    from murmur.plugins.tasks import load_tasks
 
     cfg = get_section("tasks")
     model_name = model or cfg.get("model", DEFAULT_MODEL)
@@ -282,25 +353,89 @@ def _extract_tasks(file_path, model=None, dry_run=False):
     extractor = _build_extractor()
     result = extractor(transcript=text, existing_tasks=existing_context)
     analysis = result.analysis
+    allowed_ids = set()
+    if input_path.suffix == ".json":
+        try:
+            allowed_ids = _source_segment_ids(json.loads(text))
+        except json.JSONDecodeError:
+            allowed_ids = set()
+    rejected_count = 0
+    if input_path.suffix == ".json":
+        supported = []
+        for task in analysis.new_tasks:
+            if set(task.source_segment_ids) & allowed_ids:
+                task.source_segment_ids = [
+                    segment_id
+                    for segment_id in task.source_segment_ids
+                    if segment_id in allowed_ids
+                ]
+                supported.append(task)
+            else:
+                rejected_count += 1
+        analysis.new_tasks = supported
 
-    # Save extracted tasks unless dry_run
-    if not dry_run and analysis.new_tasks:
-        for extracted in analysis.new_tasks:
-            task = Task.new(
-                extracted.title,
-                owner=extracted.owner if extracted.owner != "Unassigned" else "",
-                priority=extracted.priority
-                if extracted.priority in ("critical", "high", "normal", "low")
-                else "normal",
-                project=extracted.project,
-                deadline=extracted.deadline,
-                source_file=str(input_path),
-                tags=["murmur"],
-            )
-            all_tasks.append(task)
-        save_tasks(all_tasks)
+    store = ArtifactStore.for_input(input_path)
+    preview = _preview_payload(input_path, model_name, analysis, rejected_count)
+    preview_path = store.write_json("tasks.preview.json", preview)
+    store.register_artifact(
+        "task_change_preview",
+        preview_path,
+        kind="task_change_preview",
+        provenance={
+            "model": model_name,
+            "source_sha256": preview["source_fingerprint"]["sha256"],
+            "approval_required": True,
+        },
+    )
 
     return analysis
+
+
+def _apply_task_preview(file_path):
+    """Apply the exact persisted preview after an explicit second-step approval."""
+    from murmur.plugins.tasks import Task, load_tasks, save_tasks
+
+    input_path = _find_input_file(file_path)
+    store = ArtifactStore.for_input(input_path)
+    preview_path = store.path("tasks.preview.json")
+    try:
+        preview = json.loads(preview_path.read_text())
+    except FileNotFoundError as error:
+        raise click.ClickException(
+            "No task preview exists. Run `murmur tasks ingest FILE` first."
+        ) from error
+    if preview.get("source") != str(input_path):
+        raise click.ClickException("Task preview belongs to a different source file.")
+    current_sha = fingerprint_file(input_path)["sha256"]
+    if preview.get("source_fingerprint", {}).get("sha256") != current_sha:
+        raise click.ClickException("Source changed after preview; generate a new task preview.")
+    if preview.get("applied_at"):
+        return 0
+    all_tasks = load_tasks()
+    for proposed in preview.get("new_tasks", []):
+        task = Task.new(
+            proposed["title"],
+            owner=proposed.get("owner", "") if proposed.get("owner") != "Unassigned" else "",
+            priority=proposed.get("priority")
+            if proposed.get("priority") in ("critical", "high", "normal", "low")
+            else "normal",
+            project=proposed.get("project", ""),
+            deadline=proposed.get("deadline", ""),
+            source_file=str(input_path),
+            tags=["murmur", proposed.get("commitment", "inferred")],
+        )
+        all_tasks.append(task)
+    save_tasks(all_tasks)
+    preview["applied_at"] = datetime.now(UTC).isoformat()
+    preview["approval_required"] = False
+    preview_path = store.write_json("tasks.preview.json", preview)
+    store.register_artifact(
+        "task_change_preview",
+        preview_path,
+        kind="task_change_preview_applied",
+        provenance={"preview_id": preview["preview_id"], "approved": True},
+    )
+    return len(preview.get("new_tasks", []))
 
 
 # ---------------------------------------------------------------------------
@@ -421,6 +556,9 @@ def _write_tasks_json(file_path, analysis, updates=None):
                 "priority": t.priority,
                 "project": t.project,
                 "confidence": t.confidence,
+                "commitment": t.commitment,
+                "source_segment_ids": t.source_segment_ids,
+                "source_excerpt": t.source_excerpt,
             }
             for t in analysis.new_tasks
         ],
@@ -443,41 +581,16 @@ def _write_tasks_json(file_path, analysis, updates=None):
 
 
 def _auto_extract(summary_path, source_file=None, **_kwargs):
-    """Hook handler: auto-extract tasks from a completed summary."""
+    """Hook handler: create a task preview, never mutate a backend automatically."""
     if not _check_dep():
         return
 
     try:
         analysis = _extract_tasks(summary_path)
-
-        # Try cross-meeting matching
-        from murmur.plugins.tasks import load_tasks
-
-        existing = [t for t in load_tasks() if t.status not in ("done", "dropped")]
-        _new, updates = _match_extracted_to_existing(analysis.new_tasks, existing)
-
-        # Apply updates to existing tasks
-        if updates:
-            from murmur.plugins.tasks import save_tasks
-
-            all_tasks = load_tasks()
-            for matched, update in updates:
-                for t in all_tasks:
-                    if t.id == matched.id:
-                        if update.new_status:
-                            t.status = update.new_status
-                        if update.new_deadline:
-                            t.deadline = update.new_deadline
-                        break
-            save_tasks(all_tasks)
-
-        # Write sidecar
-        target = source_file or summary_path
-        _write_tasks_json(target, analysis, updates)
-
         console.print(
-            f"[green]Auto-extracted {len(analysis.new_tasks)} task(s)[/green] "
-            f"from {Path(summary_path).name}"
+            f"[green]Prepared {len(analysis.new_tasks)} task change(s) for review[/green] "
+            f"from {Path(summary_path).name}; run `murmur tasks ingest {summary_path} --approve` "
+            "to apply the saved preview."
         )
     except Exception as exc:
         console.print(f"[yellow]Task auto-extraction failed:[/yellow] {exc}")
