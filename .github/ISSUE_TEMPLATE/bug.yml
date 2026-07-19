@@ -1,0 +1,40 @@
+name: Bug report
+description: Report reproducible behavior that is not working as expected
+title: "bug: "
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: Thanks for helping improve Murmur. Please remove secrets from logs.
+  - type: textarea
+    id: description
+    attributes:
+      label: What happened?
+      description: Describe the problem and what you expected instead.
+    validations:
+      required: true
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: How can we reproduce it?
+      placeholder: |
+        1. Run ...
+        2. Configure ...
+        3. See ...
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Murmur version or commit
+      placeholder: 0.1.0 or commit SHA
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: Linux distribution, PipeWire, FFmpeg, Python, and install method.
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant logs
+      render: shell

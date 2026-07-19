@@ -162,6 +162,10 @@ make test          # pytest
 make fix           # ruff check --fix
 ```
 
+Contributions are welcome. See [CONTRIBUTING.md](CONTRIBUTING.md) for the small
+issue → branch → draft PR → CI workflow. Please report vulnerabilities using
+the private process in [SECURITY.md](SECURITY.md).
+
 ## Roadmap
 
 - [ ] Automatic transcription (Whisper local / Deepgram API)
