@@ -137,6 +137,9 @@ auto = true          # auto-transcribe after recording
 provider = "local"   # local or openai
 model = "base"       # whisper model size
 openai_model = "gpt-4o-transcribe"
+diarize = false
+diarize_model = "gpt-4o-transcribe-diarize"
+speaker_profile = "default"
 language = "en"
 chunk_seconds = 600
 overlap_seconds = 2
@@ -198,6 +201,43 @@ Resume is enabled by default; use `--restart` only when you intentionally want
 to submit every chunk again. The source recording is opened read-only and is
 never rewritten.
 
+### Speaker profiles and channel-aware diarization
+
+Speaker names are never assigned from anonymous cluster order. Add confirmed
+2-10 second clips to a private profile, classifying people by the side of the
+call where their voice is captured:
+
+```bash
+murmur speakers add Rohan --side local --clip rohan-reference.wav
+murmur speakers add Jatan --side local --clip jatan-reference.wav
+murmur speakers add Sujata --side remote --clip sujata-reference.wav
+murmur speakers add Abby --side remote --clip abby-reference.wav
+
+OPENAI_API_KEY='op://Personal/OPENAI_API_KEY/credential' \
+  op run -- murmur transcribe meeting.mka --diarize --speaker-profile default
+```
+
+On multitrack recordings, Murmur submits the microphone and call-output streams
+independently with only the references relevant to that side, then merges their
+absolute timelines while preserving simultaneous speech. Unknown identities
+remain explicit, such as `unknown:remote:chunk-0002:B`; they are not silently
+guessed across chunk label resets.
+
+Reference clips are normalized to private 16 kHz mono WAV files under
+`~/.config/murmur/speaker-profiles` and are converted to data URLs only in
+memory for an API request. Review and manage them with:
+
+```bash
+murmur speakers list
+murmur speakers identify meeting.mka
+murmur speakers export default --output default-speakers.zip
+murmur speakers delete default --speaker Rohan
+murmur speakers delete default
+```
+
+`speakers identify` exports candidate clips for unresolved labels. Adding one
+of those candidates to a profile is the explicit human confirmation step.
+
 ## Plugins
 
 | Plugin | Command | What it does | Install |
@@ -233,6 +273,6 @@ the private process in [SECURITY.md](SECURITY.md).
 ## Roadmap
 
 - [x] Automatic transcription (local Whisper / OpenAI)
-- [ ] Speaker diarization
+- [x] Speaker diarization with confirmed identity profiles
 - [x] Auto-detect meeting apps and start recording
 - [ ] Web UI for browsing/searching recordings

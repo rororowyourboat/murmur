@@ -7,6 +7,7 @@ from rich.console import Console
 
 from murmur import hooks
 from murmur.artifacts import ArtifactStore
+from murmur.cloud_diarize import DEFAULT_DIARIZE_MODEL, transcribe_openai_diarized
 from murmur.cloud_transcribe import (
     DEFAULT_CHUNK_SECONDS,
     DEFAULT_OVERLAP_SECONDS,
@@ -164,6 +165,18 @@ def register(cli: click.Group) -> None:
         show_default=True,
     )
     @click.option("--prompt", default=None, help="Optional vocabulary/context prompt.")
+    @click.option(
+        "--diarize",
+        is_flag=True,
+        default=False,
+        help="Use channel-aware OpenAI speaker diarization.",
+    )
+    @click.option(
+        "--speaker-profile",
+        default="default",
+        show_default=True,
+        help="Confirmed speaker profile used for diarization anchors.",
+    )
     def transcribe(
         file: str,
         provider: str | None,
@@ -173,11 +186,15 @@ def register(cli: click.Group) -> None:
         chunk_seconds: float,
         overlap_seconds: float,
         prompt: str | None,
+        diarize: bool,
+        speaker_profile: str,
     ):
         """Transcribe audio locally or with resumable OpenAI cloud processing."""
         cfg = get_section("transcribe")
-        provider_name = provider or cfg.get("provider", "local")
+        provider_name = provider or ("openai" if diarize else cfg.get("provider", "local"))
         lang = language or cfg.get("language", "en")
+        if diarize and provider_name != "openai":
+            raise click.ClickException("--diarize requires --provider openai.")
         if provider_name == "local":
             if not _check_dep():
                 raise SystemExit(1)
@@ -185,17 +202,32 @@ def register(cli: click.Group) -> None:
             _transcribe_file(file, model_size, lang)
             return
 
-        model_name = model or cfg.get("openai_model", DEFAULT_OPENAI_MODEL)
+        model_name = model or (
+            cfg.get("diarize_model", DEFAULT_DIARIZE_MODEL)
+            if diarize
+            else cfg.get("openai_model", DEFAULT_OPENAI_MODEL)
+        )
         try:
-            result = transcribe_openai(
-                file,
-                model=model_name,
-                language=lang,
-                prompt=prompt,
-                chunk_seconds=chunk_seconds,
-                overlap_seconds=overlap_seconds,
-                resume=resume,
-            )
+            if diarize:
+                result = transcribe_openai_diarized(
+                    file,
+                    profile_name=speaker_profile,
+                    model=model_name,
+                    language=lang,
+                    chunk_seconds=chunk_seconds,
+                    overlap_seconds=overlap_seconds,
+                    resume=resume,
+                )
+            else:
+                result = transcribe_openai(
+                    file,
+                    model=model_name,
+                    language=lang,
+                    prompt=prompt,
+                    chunk_seconds=chunk_seconds,
+                    overlap_seconds=overlap_seconds,
+                    resume=resume,
+                )
         except (RuntimeError, ValueError) as error:
             raise click.ClickException(str(error)) from error
         transcript_path = ArtifactStore(file).path("transcript.md")
@@ -217,13 +249,23 @@ def register(cli: click.Group) -> None:
             lang = cfg.get("language", "en")
             console.print(f"\n[bold]Auto-transcribing[/bold] {output_path}")
             if cfg.get("provider", "local") == "openai":
-                transcribe_openai(
-                    output_path,
-                    model=cfg.get("openai_model", DEFAULT_OPENAI_MODEL),
-                    language=lang,
-                    chunk_seconds=cfg.get("chunk_seconds", DEFAULT_CHUNK_SECONDS),
-                    overlap_seconds=cfg.get("overlap_seconds", DEFAULT_OVERLAP_SECONDS),
-                )
+                if cfg.get("diarize", False):
+                    transcribe_openai_diarized(
+                        output_path,
+                        profile_name=cfg.get("speaker_profile", "default"),
+                        model=cfg.get("diarize_model", DEFAULT_DIARIZE_MODEL),
+                        language=lang,
+                        chunk_seconds=cfg.get("chunk_seconds", DEFAULT_CHUNK_SECONDS),
+                        overlap_seconds=cfg.get("overlap_seconds", DEFAULT_OVERLAP_SECONDS),
+                    )
+                else:
+                    transcribe_openai(
+                        output_path,
+                        model=cfg.get("openai_model", DEFAULT_OPENAI_MODEL),
+                        language=lang,
+                        chunk_seconds=cfg.get("chunk_seconds", DEFAULT_CHUNK_SECONDS),
+                        overlap_seconds=cfg.get("overlap_seconds", DEFAULT_OVERLAP_SECONDS),
+                    )
                 transcript_path = ArtifactStore(output_path).path("transcript.md")
                 hooks.emit(
                     "transcription_complete",
