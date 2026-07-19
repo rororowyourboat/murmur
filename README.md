@@ -61,6 +61,9 @@ murmur devices
 murmur start
 murmur start --tag standup --format mp3
 
+# Capture a default playback mix plus separate mic and call-output tracks
+murmur start --mic
+
 # Toggle recording on/off (for keyboard shortcuts)
 murmur toggle
 
@@ -105,6 +108,11 @@ Saved to `~/Recordings/meetings/` with naming convention:
 meeting_standup_2026-03-18_14-30-00.flac
 meeting_standup_2026-03-18_14-30-00.json   # metadata
 ```
+
+Recordings made with `--mic` use Matroska (`.mka`) and contain three named Opus
+streams: **Mixed call** (the default playback stream), **Microphone**, and
+**Call output**. The source streams remain independently selectable in players
+such as VLC and in FFmpeg.
 
 ## Configuration
 

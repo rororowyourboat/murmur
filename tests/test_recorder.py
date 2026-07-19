@@ -134,6 +134,8 @@ def test_build_ffmpeg_cmd_flac():
     assert cmd == [
         "ffmpeg",
         "-y",
+        "-thread_queue_size",
+        "1024",
         "-f",
         "pulse",
         "-i",
@@ -161,34 +163,73 @@ def test_build_ffmpeg_cmd_ogg():
     assert "libvorbis" in cmd
 
 
-def test_build_ffmpeg_cmd_dual_channel():
+def test_build_ffmpeg_cmd_multitrack_mka():
     cmd = recorder.build_ffmpeg_cmd(
-        Path("/tmp/out.flac"),
+        Path("/tmp/out.mka"),
         "alsa_output.test",
         "flac",
         mic_source="alsa_input.mic",
     )
-    # Should have two -i inputs
-    i_indices = [i for i, v in enumerate(cmd) if v == "-i"]
-    assert len(i_indices) == 2
-    assert cmd[i_indices[0] + 1] == "alsa_output.test.monitor"
-    assert cmd[i_indices[1] + 1] == "alsa_input.mic"
-    # Should use amerge filter to mix into stereo
-    assert "-filter_complex" in cmd
-    assert any("amerge" in v for v in cmd)
-    assert "-map" in cmd
-    assert "[out]" in cmd
+    assert cmd == [
+        "ffmpeg",
+        "-y",
+        "-thread_queue_size",
+        "1024",
+        "-f",
+        "pulse",
+        "-i",
+        "alsa_output.test.monitor",
+        "-thread_queue_size",
+        "1024",
+        "-f",
+        "pulse",
+        "-i",
+        "alsa_input.mic",
+        "-filter_complex",
+        "[0:a]aresample=async=1000:first_pts=0,asplit=2[call_mix][call_track];"
+        "[1:a]aresample=async=1000:first_pts=0,asplit=2[mic_mix][mic_track];"
+        "[call_mix][mic_mix]amix=inputs=2:duration=longest:dropout_transition=0:"
+        "normalize=0,alimiter=limit=0.95:level=false[mix]",
+        "-map",
+        "[mix]",
+        "-map",
+        "[mic_track]",
+        "-map",
+        "[call_track]",
+        "-c:a",
+        "libopus",
+        "-b:a:0",
+        "128k",
+        "-b:a:1",
+        "96k",
+        "-b:a:2",
+        "96k",
+        "-metadata:s:a:0",
+        "title=Mixed call",
+        "-metadata:s:a:1",
+        "title=Microphone",
+        "-metadata:s:a:2",
+        "title=Call output",
+        "-disposition:a:0",
+        "default",
+        "-disposition:a:1",
+        "0",
+        "-disposition:a:2",
+        "0",
+        "-f",
+        "matroska",
+        "/tmp/out.mka",
+    ]
 
 
-def test_build_ffmpeg_cmd_dual_channel_codec():
-    cmd = recorder.build_ffmpeg_cmd(
-        Path("/tmp/out.flac"),
-        "alsa_output.test",
-        "flac",
-        mic_source="alsa_input.mic",
-    )
-    assert "-c:a" in cmd
-    assert "flac" in cmd
+def test_build_ffmpeg_cmd_multitrack_requires_mka():
+    with pytest.raises(ValueError, match=r"requires an \.mka"):
+        recorder.build_ffmpeg_cmd(
+            Path("/tmp/out.flac"),
+            "alsa_output.test",
+            "flac",
+            mic_source="alsa_input.mic",
+        )
 
 
 def test_make_output_path_explicit():
@@ -211,6 +252,56 @@ def test_make_output_path_with_tag(tmp_path):
 
     assert "_standup_" in path.name
     assert path.suffix == ".mp3"
+
+
+def test_make_output_path_multitrack_forces_mka(tmp_path):
+    with patch.object(recorder, "_default_output_dir", return_value=tmp_path):
+        generated = recorder.make_output_path(None, "flac", "standup", multitrack=True)
+        explicit = recorder.make_output_path("/tmp/custom.flac", "flac", None, multitrack=True)
+
+    assert generated.suffix == ".mka"
+    assert explicit == Path("/tmp/custom.mka")
+
+
+def test_multitrack_metadata_records_stream_contract():
+    meta = recorder._recording_metadata(
+        Path("/tmp/meeting.mka"),
+        "alsa_output.test",
+        91,
+        "flac",
+        "alsa_input.mic",
+        58,
+    )
+
+    assert meta["format"] == "mka"
+    assert meta["requested_format"] == "flac"
+    assert meta["capture_mode"] == "multitrack"
+    assert meta["stream_layout"] == [
+        {
+            "index": 0,
+            "title": "Mixed call",
+            "codec": "opus",
+            "source_role": "mixed",
+            "default": True,
+            "source_names": ["alsa_output.test.monitor", "alsa_input.mic"],
+        },
+        {
+            "index": 1,
+            "title": "Microphone",
+            "codec": "opus",
+            "source_role": "microphone",
+            "default": False,
+            "source_names": ["alsa_input.mic"],
+        },
+        {
+            "index": 2,
+            "title": "Call output",
+            "codec": "opus",
+            "source_role": "call_output",
+            "default": False,
+            "source_names": ["alsa_output.test.monitor"],
+        },
+    ]
 
 
 def test_is_recording_no_pid_file(tmp_path):
@@ -275,6 +366,51 @@ def test_finalize_recording_uses_ffprobe_metadata(tmp_path):
         meta_path=str(output.with_suffix(".json")),
         duration_secs=12.5,
     )
+
+
+def test_finalize_recording_enriches_multitrack_stream_metadata(tmp_path):
+    output = tmp_path / "meeting.mka"
+    output.write_bytes(b"audio")
+    meta = recorder._recording_metadata(
+        output,
+        "alsa_output.test",
+        91,
+        "flac",
+        "alsa_input.mic",
+        58,
+    )
+    probe = {
+        "format": {"duration": "12.5", "size": "5"},
+        "streams": [
+            {
+                "index": index,
+                "codec_name": "opus",
+                "codec_type": "audio",
+                "tags": {"title": title},
+                "disposition": {"default": int(index == 0)},
+            }
+            for index, title in enumerate(("Mixed call", "Microphone", "Call output"))
+        ],
+    }
+
+    with (
+        patch.object(recorder, "_probe_media", return_value=probe),
+        patch.object(recorder.hooks, "emit"),
+    ):
+        finalized = recorder._finalize_recording(meta)
+
+    assert [stream["title"] for stream in finalized["streams"]] == [
+        "Mixed call",
+        "Microphone",
+        "Call output",
+    ]
+    assert [stream["source_role"] for stream in finalized["streams"]] == [
+        "mixed",
+        "microphone",
+        "call_output",
+    ]
+    assert finalized["streams"][0]["default"] is True
+    assert finalized["streams"][1]["source_names"] == ["alsa_input.mic"]
 
 
 def test_record_background_persists_active_state(tmp_path):
