@@ -41,6 +41,7 @@ def test_diarize_registers_command():
     grp = _make_group()
     diarize.register(grp)
     assert "diarize" in [c for c in grp.commands]
+    assert "speakers" in [c for c in grp.commands]
 
 
 def test_tui_registers_command():
@@ -72,12 +73,12 @@ def test_diarize_missing_dep():
     assert result.exit_code != 0
 
 
-def test_diarize_has_speakers_option():
+def test_diarize_does_not_offer_unsafe_cluster_order_name_mapping():
     grp = _make_group()
     diarize.register(grp)
     cmd = grp.commands["diarize"]
     param_names = [p.name for p in cmd.params]
-    assert "speakers" in param_names
+    assert "speakers" not in param_names
 
 
 def test_format_srt_time():
@@ -191,6 +192,41 @@ def test_transcribe_openai_provider_dispatches_cloud_pipeline(tmp_path):
     )
 
 
+def test_transcribe_diarize_dispatches_channel_aware_pipeline(tmp_path):
+    audio = tmp_path / "meeting.mka"
+    audio.write_bytes(b"audio")
+    grp = _make_group()
+    transcribe.register(grp)
+
+    with (
+        patch.object(
+            transcribe, "transcribe_openai_diarized", return_value={"segments": []}
+        ) as cloud,
+        patch.object(transcribe.hooks, "emit"),
+    ):
+        result = runner.invoke(
+            grp,
+            [
+                "transcribe",
+                str(audio),
+                "--diarize",
+                "--speaker-profile",
+                "team",
+            ],
+        )
+
+    assert result.exit_code == 0
+    cloud.assert_called_once_with(
+        str(audio),
+        profile_name="team",
+        model="gpt-4o-transcribe-diarize",
+        language="en",
+        chunk_seconds=600.0,
+        overlap_seconds=2.0,
+        resume=True,
+    )
+
+
 def test_diarization_persists_canonical_outputs(tmp_path):
     audio = tmp_path / "meeting.flac"
     audio.write_bytes(b"audio")
@@ -216,13 +252,11 @@ def test_diarization_persists_canonical_outputs(tmp_path):
     pyannote.audio = pyannote_audio
 
     with patch.dict(sys.modules, {"pyannote": pyannote, "pyannote.audio": pyannote_audio}):
-        rttm, timeline, speakers = diarize._diarize_file(
-            str(audio), "hf_never_persist", {"SPEAKER_00": "Rohan"}
-        )
+        rttm, timeline, speakers = diarize._diarize_file(str(audio), "hf_never_persist")
 
     assert rttm.parent.name == "speakers"
     assert "SPEAKER_00" in rttm.read_text()
-    assert "Rohan" in timeline.read_text()
+    assert "SPEAKER_00" in timeline.read_text()
     assert speakers == {"SPEAKER_00"}
     assert "hf_never_persist" not in (tmp_path / "artifacts/meeting/jobs.json").read_text()
 
