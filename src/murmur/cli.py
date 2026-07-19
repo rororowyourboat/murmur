@@ -3,8 +3,6 @@
 from __future__ import annotations
 
 import json
-import os
-import signal
 from datetime import datetime
 from importlib.metadata import entry_points
 from pathlib import Path
@@ -24,6 +22,7 @@ from murmur.recorder import (
     record_foreground,
     resolve_sink,
     resolve_source,
+    stop_recording,
 )
 
 console = Console()
@@ -267,14 +266,13 @@ def toggle(audio_format: str, tag: str | None, mic: bool, mic_device: int | None
 
     if pid is not None:
         try:
-            os.kill(pid, signal.SIGTERM)
-            notify("Recording stopped", "Meeting recording saved.")
-            console.print(f"[yellow]Stopped recording (PID {pid}).[/yellow]")
-        except ProcessLookupError:
-            from murmur.recorder import PID_FILE
-
-            PID_FILE.unlink(missing_ok=True)
-            console.print("[yellow]Recording was already stopped.[/yellow]")
+            finalized = stop_recording()
+        except RuntimeError as error:
+            console.print(f"[red]Could not stop recording: {error}[/red]")
+            raise click.ClickException(str(error)) from error
+        notify("Recording stopped", f"Saved {Path(finalized['output']).name}.")
+        console.print(f"[yellow]Stopped recording (PID {pid}).[/yellow]")
+        console.print(f"  Output: [cyan]{finalized['output']}[/cyan]")
         return
 
     sink_id, monitor_name = resolve_sink(None)

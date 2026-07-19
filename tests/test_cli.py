@@ -63,6 +63,23 @@ def test_status_not_recording():
     assert "Not recording" in result.output
 
 
+def test_toggle_stop_uses_shared_finalizer(tmp_path):
+    output = tmp_path / "meeting.flac"
+    finalized = {"status": "recorded", "output": str(output), "duration_secs": 12.5}
+
+    with (
+        patch("murmur.cli.is_recording", return_value=4321),
+        patch("murmur.cli.stop_recording", return_value=finalized) as stop,
+        patch("murmur.cli.notify"),
+    ):
+        result = runner.invoke(cli, ["toggle"])
+
+    assert result.exit_code == 0
+    assert "Stopped recording" in result.output
+    assert str(output) in result.output
+    stop.assert_called_once_with()
+
+
 def test_list_no_directory(tmp_path):
     with patch(
         "murmur.recorder._default_output_dir",

@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import json
 import os
-import signal
 from datetime import datetime
 from pathlib import Path
 
@@ -19,6 +18,7 @@ from murmur.recorder import (
     notify,
     record_background,
     resolve_sink,
+    stop_recording,
 )
 
 AUDIO_SUFFIXES = {".flac", ".mp3", ".wav", ".ogg", ".m4a", ".opus"}
@@ -355,11 +355,11 @@ def _build_app(audio_format: str):
                 self.notify("Not recording", severity="warning")
                 return
             try:
-                os.kill(pid, signal.SIGTERM)
+                finalized = stop_recording()
                 notify("Recording stopped", "Meeting recording saved.")
-                self.notify("Recording stopped")
-            except ProcessLookupError:
-                self.notify("Recording already stopped", severity="warning")
+                self.notify(f"Recording saved: {Path(finalized['output']).name}")
+            except RuntimeError as error:
+                self.notify(f"Could not stop recording: {error}", severity="error")
             # Table will refresh via poll or status bar detection
             self.set_timer(1.0, self._populate_table)
 

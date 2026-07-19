@@ -1,7 +1,11 @@
 """Tests for recorder module — PipeWire parsing, FFmpeg cmd building, helpers."""
 
+import json
+import signal
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock, call, patch
+
+import pytest
 
 from murmur import recorder
 
@@ -220,3 +224,151 @@ def test_is_recording_stale_pid(tmp_path):
     with patch.object(recorder, "PID_FILE", pid_file):
         assert recorder.is_recording() is None
     assert not pid_file.exists()
+
+
+def test_is_recording_rejects_reused_pid(tmp_path):
+    pid_file = tmp_path / "murmur.pid"
+    pid_file.write_text("1234")
+    pid_file.with_name("recording.json").write_text(
+        json.dumps({"pid": 1234, "output": "/tmp/meeting.flac"})
+    )
+
+    with (
+        patch.object(recorder, "PID_FILE", pid_file),
+        patch.object(recorder, "_process_matches", return_value=False),
+        patch.object(recorder, "_finalize_recording") as finalize,
+    ):
+        assert recorder.is_recording() is None
+
+    finalize.assert_called_once()
+    assert not pid_file.exists()
+    assert not pid_file.with_name("recording.json").exists()
+
+
+def test_finalize_recording_uses_ffprobe_metadata(tmp_path):
+    output = tmp_path / "meeting.flac"
+    output.write_bytes(b"audio")
+    meta = {
+        "status": "recording",
+        "started_at": "2026-07-20T10:00:00",
+        "output": str(output),
+    }
+    probe = {
+        "format": {"duration": "12.5", "size": "5"},
+        "streams": [{"index": 0, "codec_name": "flac", "codec_type": "audio"}],
+    }
+
+    with (
+        patch.object(recorder, "_probe_media", return_value=probe),
+        patch.object(recorder.hooks, "emit") as emit,
+    ):
+        finalized = recorder._finalize_recording(meta)
+
+    assert finalized["status"] == "recorded"
+    assert finalized["duration_secs"] == 12.5
+    assert finalized["file_size_bytes"] == 5
+    assert finalized["streams"] == probe["streams"]
+    assert json.loads(output.with_suffix(".json").read_text())["status"] == "recorded"
+    emit.assert_called_once_with(
+        "recording_saved",
+        output_path=str(output),
+        meta_path=str(output.with_suffix(".json")),
+        duration_secs=12.5,
+    )
+
+
+def test_record_background_persists_active_state(tmp_path):
+    pid_file = tmp_path / "cache" / "murmur.pid"
+    output = tmp_path / "meeting.flac"
+    process = MagicMock(pid=4321)
+
+    with (
+        patch.object(recorder, "PID_FILE", pid_file),
+        patch.object(recorder, "is_recording", return_value=None),
+        patch.object(recorder.subprocess, "Popen", return_value=process),
+        patch.object(recorder.hooks, "emit") as emit,
+    ):
+        pid = recorder.record_background(output, "sink", 91, "flac")
+
+    assert pid == 4321
+    assert pid_file.read_text().strip() == "4321"
+    state = json.loads(pid_file.with_name("recording.json").read_text())
+    assert state["pid"] == 4321
+    assert state["output"] == str(output)
+    assert json.loads(output.with_suffix(".json").read_text())["status"] == "recording"
+    emit.assert_called_once_with(
+        "recording_started",
+        pid=4321,
+        output_path=str(output),
+        source="sink.monitor",
+    )
+
+
+def test_stop_recording_gracefully_finalizes_and_clears_state(tmp_path):
+    pid_file = tmp_path / "cache" / "murmur.pid"
+    pid_file.parent.mkdir()
+    pid_file.write_text("4321")
+    output = tmp_path / "meeting.flac"
+    meta_path = output.with_suffix(".json")
+    meta = {"status": "recording", "started_at": "2026-07-20T10:00:00", "output": str(output)}
+    meta_path.write_text(json.dumps(meta))
+    pid_file.with_name("recording.json").write_text(
+        json.dumps({"pid": 4321, "output": str(output), "meta_path": str(meta_path)})
+    )
+    finalized = {**meta, "status": "recorded", "duration_secs": 12.5}
+
+    with (
+        patch.object(recorder, "PID_FILE", pid_file),
+        patch.object(recorder, "_process_matches", return_value=True),
+        patch.object(recorder, "_pid_exists", return_value=False),
+        patch.object(recorder, "_finalize_recording", return_value=finalized) as finalize,
+        patch.object(recorder.os, "kill") as kill,
+    ):
+        result = recorder.stop_recording()
+
+    assert result == finalized
+    kill.assert_called_once_with(4321, signal.SIGINT)
+    finalize.assert_called_once_with(meta)
+    assert not pid_file.exists()
+    assert not pid_file.with_name("recording.json").exists()
+
+
+def test_stop_recording_uses_sigterm_after_timeout(tmp_path):
+    pid_file = tmp_path / "cache" / "murmur.pid"
+    pid_file.parent.mkdir()
+    pid_file.write_text("4321")
+    output = tmp_path / "meeting.flac"
+    meta_path = output.with_suffix(".json")
+    meta = {"status": "recording", "started_at": "2026-07-20T10:00:00", "output": str(output)}
+    meta_path.write_text(json.dumps(meta))
+    pid_file.with_name("recording.json").write_text(
+        json.dumps({"pid": 4321, "output": str(output), "meta_path": str(meta_path)})
+    )
+
+    with (
+        patch.object(recorder, "PID_FILE", pid_file),
+        patch.object(recorder, "_process_matches", return_value=True),
+        patch.object(recorder, "_pid_exists", side_effect=[True, True, False, False]),
+        patch.object(recorder, "_finalize_recording", return_value={**meta, "status": "recorded"}),
+        patch.object(recorder.os, "kill") as kill,
+    ):
+        recorder.stop_recording(timeout=0)
+
+    assert kill.call_args_list == [call(4321, signal.SIGINT), call(4321, signal.SIGTERM)]
+
+
+def test_record_background_marks_spawn_failure(tmp_path):
+    pid_file = tmp_path / "cache" / "murmur.pid"
+    output = tmp_path / "meeting.flac"
+
+    with (
+        patch.object(recorder, "PID_FILE", pid_file),
+        patch.object(recorder, "is_recording", return_value=None),
+        patch.object(recorder.subprocess, "Popen", side_effect=OSError("ffmpeg missing")),
+        pytest.raises(RuntimeError, match="Could not start FFmpeg"),
+    ):
+        recorder.record_background(output, "sink", 91, "flac")
+
+    metadata = json.loads(output.with_suffix(".json").read_text())
+    assert metadata["status"] == "failed"
+    assert "ffmpeg missing" in metadata["error"]

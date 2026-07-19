@@ -16,6 +16,7 @@ from murmur.recorder import (
     notify,
     record_background,
     resolve_sink,
+    stop_recording,
 )
 
 console = Console()
@@ -211,14 +212,16 @@ def register(cli: click.Group) -> None:
                     )
 
                     if auto_record and is_recording():
-                        import os
-                        import signal
-
-                        pid = is_recording()
-                        if pid:
-                            os.kill(pid, signal.SIGTERM)
+                        try:
+                            finalized = stop_recording()
                             notify("Auto-recording stopped", "Meeting recording saved.")
-                            console.print("[bold yellow]Auto-recording stopped.[/bold yellow]")
+                            console.print(
+                                "[bold yellow]Auto-recording stopped:[/bold yellow] "
+                                f"{finalized['output']}"
+                            )
+                        except RuntimeError as error:
+                            notify("Could not stop recording", str(error), urgency="critical")
+                            console.print(f"[red]Could not stop recording: {error}[/red]")
 
                     active_meeting = None
 

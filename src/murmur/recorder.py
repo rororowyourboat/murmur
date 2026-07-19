@@ -2,13 +2,18 @@
 
 from __future__ import annotations
 
+import fcntl
 import json
 import os
+import shutil
 import signal
 import subprocess
 import sys
+import time
+from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
+from typing import Any
 
 from rich.console import Console
 
@@ -18,6 +23,215 @@ from murmur.config import get_section
 console = Console()
 
 PID_FILE = Path.home() / ".cache" / "murmur" / "murmur.pid"
+
+
+def _state_file() -> Path:
+    return PID_FILE.with_name("recording.json")
+
+
+def _lock_file() -> Path:
+    return PID_FILE.with_name("control.lock")
+
+
+@contextmanager
+def _control_lock():
+    """Serialize recording state transitions across CLI/plugin processes."""
+    lock_path = _lock_file()
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    with lock_path.open("w") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        yield
+
+
+def _write_json_atomic(path: Path, payload: dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+    temporary.write_text(json.dumps(payload, indent=2) + "\n")
+    os.replace(temporary, path)
+
+
+def _read_active_state() -> dict[str, Any] | None:
+    try:
+        state = json.loads(_state_file().read_text())
+    except FileNotFoundError, json.JSONDecodeError, OSError:
+        return None
+    return state if isinstance(state, dict) else None
+
+
+def _clear_active_state() -> None:
+    PID_FILE.unlink(missing_ok=True)
+    _state_file().unlink(missing_ok=True)
+
+
+def _pid_exists(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError, PermissionError:
+        return False
+
+    # kill(pid, 0) succeeds for zombies, but a zombie has already finished
+    # writing its output and should not block finalization.
+    try:
+        stat = Path(f"/proc/{pid}/stat").read_text()
+        if stat.rsplit(")", 1)[1].strip().startswith("Z"):
+            return False
+    except FileNotFoundError, IndexError, OSError:
+        pass
+    return True
+
+
+def _process_matches(pid: int, output_path: str | None = None) -> bool:
+    """Return whether pid is the FFmpeg process recorded in active state."""
+    if not _pid_exists(pid):
+        return False
+    try:
+        command = Path(f"/proc/{pid}/cmdline").read_bytes().split(b"\0")
+    except FileNotFoundError, PermissionError, OSError:
+        return False
+    if not command or Path(os.fsdecode(command[0])).name != "ffmpeg":
+        return False
+    if output_path is None:
+        return True
+    encoded_output = os.fsencode(output_path)
+    return encoded_output in command
+
+
+def _recording_metadata(
+    output_path: Path,
+    monitor_name: str,
+    sink_id: int,
+    audio_format: str,
+    mic_source: str | None,
+    mic_id: int | None,
+) -> dict[str, Any]:
+    meta: dict[str, Any] = {
+        "status": "recording",
+        "source": f"{monitor_name}.monitor",
+        "sink_id": sink_id,
+        "format": audio_format,
+        "started_at": datetime.now().isoformat(),
+        "output": str(output_path),
+        "dual_channel": mic_source is not None,
+    }
+    if mic_source:
+        meta["mic_source"] = mic_source
+        meta["mic_id"] = mic_id
+    return meta
+
+
+def _write_active_state(pid: int, meta: dict[str, Any], log_path: Path) -> None:
+    PID_FILE.parent.mkdir(parents=True, exist_ok=True)
+    PID_FILE.write_text(f"{pid}\n")
+    _write_json_atomic(
+        _state_file(),
+        {
+            "pid": pid,
+            "output": meta["output"],
+            "meta_path": str(Path(meta["output"]).with_suffix(".json")),
+            "log_path": str(log_path),
+            "started_at": meta["started_at"],
+        },
+    )
+
+
+def _metadata_from_state(state: dict[str, Any]) -> dict[str, Any]:
+    output_path = Path(state["output"])
+    meta_path = Path(state.get("meta_path", output_path.with_suffix(".json")))
+    try:
+        meta = json.loads(meta_path.read_text())
+    except FileNotFoundError, json.JSONDecodeError, OSError:
+        meta = {
+            "status": "recording",
+            "started_at": state.get("started_at", datetime.now().isoformat()),
+            "output": str(output_path),
+        }
+    if isinstance(meta, dict):
+        return meta
+    return {"status": "recording", "output": str(output_path)}
+
+
+def _log_error(state: dict[str, Any]) -> str | None:
+    log_path = state.get("log_path")
+    if not log_path:
+        return None
+    try:
+        content = Path(log_path).read_text(errors="replace").strip()
+    except OSError:
+        return None
+    return content[-500:] or None
+
+
+def _mark_start_failed(meta: dict[str, Any], error: OSError) -> None:
+    failed = dict(meta)
+    failed.update(
+        {
+            "status": "failed",
+            "stopped_at": datetime.now().isoformat(),
+            "error": f"Could not start FFmpeg: {error}",
+        }
+    )
+    _write_json_atomic(Path(meta["output"]).with_suffix(".json"), failed)
+
+
+def _probe_media(output_path: Path) -> dict[str, Any] | None:
+    ffprobe = shutil.which("ffprobe")
+    if ffprobe is None:
+        return None
+    result = subprocess.run(  # noqa: S603
+        [
+            ffprobe,
+            "-v",
+            "error",
+            "-show_entries",
+            "format=duration,size:stream=index,codec_name,codec_type,channels",
+            "-of",
+            "json",
+            str(output_path),
+        ],
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode != 0:
+        return None
+    try:
+        payload = json.loads(result.stdout)
+    except json.JSONDecodeError:
+        return None
+    return payload if isinstance(payload, dict) else None
+
+
+def _finalize_recording(meta: dict[str, Any], error: str | None = None) -> dict[str, Any]:
+    output_path = Path(meta["output"])
+    meta_path = output_path.with_suffix(".json")
+    finalized = dict(meta)
+    finalized["stopped_at"] = datetime.now().isoformat()
+
+    probe = _probe_media(output_path) if output_path.is_file() else None
+    if probe is not None and output_path.stat().st_size > 0:
+        format_info = probe.get("format", {})
+        finalized.update(
+            {
+                "status": "recorded",
+                "duration_secs": float(format_info.get("duration", 0.0)),
+                "file_size_bytes": int(format_info.get("size", output_path.stat().st_size)),
+                "file_size_mb": round(output_path.stat().st_size / (1024 * 1024), 2),
+                "streams": probe.get("streams", []),
+            }
+        )
+        finalized.pop("error", None)
+    else:
+        finalized["status"] = "failed"
+        finalized["error"] = error or "FFmpeg did not produce a valid media file."
+
+    _write_json_atomic(meta_path, finalized)
+    if finalized["status"] == "recorded":
+        hooks.emit(
+            "recording_saved",
+            output_path=str(output_path),
+            meta_path=str(meta_path),
+            duration_secs=finalized["duration_secs"],
+        )
+    return finalized
 
 
 def _default_output_dir() -> Path:
@@ -190,11 +404,75 @@ def is_recording() -> int | None:
         return None
     try:
         pid = int(PID_FILE.read_text().strip())
-        os.kill(pid, 0)
-        return pid
-    except ValueError, ProcessLookupError, PermissionError:
-        PID_FILE.unlink(missing_ok=True)
+    except ValueError, OSError:
+        _clear_active_state()
         return None
+
+    state = _read_active_state()
+    output_path = str(state.get("output")) if state and state.get("output") else None
+    if _process_matches(pid, output_path):
+        return pid
+
+    if state and state.get("pid") == pid and state.get("output"):
+        try:
+            _finalize_recording(_metadata_from_state(state), error=_log_error(state))
+        finally:
+            _clear_active_state()
+    else:
+        _clear_active_state()
+    return None
+
+
+def stop_recording(timeout: float = 5.0) -> dict[str, Any]:
+    """Gracefully stop and finalize the active background recording."""
+    with _control_lock():
+        state = _read_active_state()
+        if state is None:
+            raise RuntimeError("No recording is currently in progress.")
+
+        try:
+            pid = int(state["pid"])
+        except (KeyError, TypeError, ValueError) as error:
+            _clear_active_state()
+            raise RuntimeError("Active recording state has no valid PID.") from error
+
+        meta = _metadata_from_state(state)
+        meta_path = Path(meta["output"]).with_suffix(".json")
+        if not _process_matches(pid, str(state["output"])):
+            try:
+                return _finalize_recording(meta, error=_log_error(state))
+            finally:
+                _clear_active_state()
+
+        os.kill(pid, signal.SIGINT)
+        deadline = time.monotonic() + timeout
+        while _pid_exists(pid) and time.monotonic() < deadline:
+            time.sleep(0.1)
+
+        if _pid_exists(pid):
+            os.kill(pid, signal.SIGTERM)
+            fallback_deadline = time.monotonic() + 1.0
+            while _pid_exists(pid) and time.monotonic() < fallback_deadline:
+                time.sleep(0.1)
+
+        error = None
+        if _pid_exists(pid):
+            error = f"FFmpeg process {pid} did not exit after SIGINT and SIGTERM."
+            failed = dict(meta)
+            failed.update(
+                {
+                    "status": "failed",
+                    "stopped_at": datetime.now().isoformat(),
+                    "error": error,
+                }
+            )
+            _write_json_atomic(meta_path, failed)
+            raise RuntimeError(error)
+
+        try:
+            return _finalize_recording(meta)
+        finally:
+            _clear_active_state()
 
 
 def resolve_sink(device: int | None) -> tuple[int, str]:
@@ -253,23 +531,24 @@ def record_foreground(
 ) -> None:
     """Run FFmpeg in the foreground, blocking until stopped."""
     cmd = build_ffmpeg_cmd(output_path, monitor_name, audio_format, mic_source=mic_source)
+    meta = _recording_metadata(
+        output_path, monitor_name, sink_id, audio_format, mic_source, mic_id
+    )
+    meta_path = output_path.with_suffix(".json")
+    log_path = output_path.with_suffix(f"{output_path.suffix}.ffmpeg.log")
 
-    meta = {
-        "source": f"{monitor_name}.monitor",
-        "sink_id": sink_id,
-        "format": audio_format,
-        "started_at": datetime.now().isoformat(),
-        "output": str(output_path),
-        "dual_channel": mic_source is not None,
-    }
-    if mic_source:
-        meta["mic_source"] = mic_source
-        meta["mic_id"] = mic_id
-
-    proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)  # noqa: S603
-
-    PID_FILE.parent.mkdir(parents=True, exist_ok=True)
-    PID_FILE.write_text(str(proc.pid))
+    with _control_lock():
+        if is_recording():
+            raise RuntimeError("A recording is already in progress.")
+        _write_json_atomic(meta_path, meta)
+        try:
+            proc = subprocess.Popen(  # noqa: S603
+                cmd, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE
+            )
+        except OSError as error:
+            _mark_start_failed(meta, error)
+            raise RuntimeError(f"Could not start FFmpeg: {error}") from error
+        _write_active_state(proc.pid, meta, log_path)
 
     hooks.emit(
         "recording_started",
@@ -285,26 +564,12 @@ def record_foreground(
     signal.signal(signal.SIGTERM, handle_stop)
 
     _, stderr = proc.communicate()
+    if stderr:
+        log_path.write_bytes(stderr)
+    _clear_active_state()
+    finalized = _finalize_recording(meta, error=stderr.decode(errors="replace")[-500:] or None)
 
-    PID_FILE.unlink(missing_ok=True)
-    meta["stopped_at"] = datetime.now().isoformat()
-
-    if output_path.exists():
-        meta["file_size_mb"] = round(output_path.stat().st_size / (1024 * 1024), 2)
-        meta_path = output_path.with_suffix(".json")
-        meta_path.write_text(json.dumps(meta, indent=2))
-
-        started = datetime.fromisoformat(meta["started_at"])
-        stopped = datetime.fromisoformat(meta["stopped_at"])
-        duration_secs = (stopped - started).total_seconds()
-
-        hooks.emit(
-            "recording_saved",
-            output_path=str(output_path),
-            meta_path=str(meta_path),
-            duration_secs=duration_secs,
-        )
-
+    if finalized["status"] == "recorded":
         console.print(f"\n[bold green]Recording saved:[/bold green] {output_path}")
         console.print(f"[dim]Metadata: {meta_path}[/dim]")
     else:
@@ -323,31 +588,28 @@ def record_background(
 ) -> int:
     """Launch FFmpeg as a detached background process. Returns PID."""
     cmd = build_ffmpeg_cmd(output_path, monitor_name, audio_format, mic_source=mic_source)
-
-    meta = {
-        "source": f"{monitor_name}.monitor",
-        "sink_id": sink_id,
-        "format": audio_format,
-        "started_at": datetime.now().isoformat(),
-        "output": str(output_path),
-        "dual_channel": mic_source is not None,
-    }
-    if mic_source:
-        meta["mic_source"] = mic_source
-        meta["mic_id"] = mic_id
-
-    meta_path = output_path.with_suffix(".json")
-    meta_path.write_text(json.dumps(meta, indent=2))
-
-    proc = subprocess.Popen(  # noqa: S603
-        cmd,
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-        start_new_session=True,
+    meta = _recording_metadata(
+        output_path, monitor_name, sink_id, audio_format, mic_source, mic_id
     )
+    meta_path = output_path.with_suffix(".json")
+    log_path = output_path.with_suffix(f"{output_path.suffix}.ffmpeg.log")
 
-    PID_FILE.parent.mkdir(parents=True, exist_ok=True)
-    PID_FILE.write_text(str(proc.pid))
+    with _control_lock():
+        if is_recording():
+            raise RuntimeError("A recording is already in progress.")
+        _write_json_atomic(meta_path, meta)
+        try:
+            with log_path.open("ab") as log:
+                proc = subprocess.Popen(  # noqa: S603
+                    cmd,
+                    stdout=subprocess.DEVNULL,
+                    stderr=log,
+                    start_new_session=True,
+                )
+        except OSError as error:
+            _mark_start_failed(meta, error)
+            raise RuntimeError(f"Could not start FFmpeg: {error}") from error
+        _write_active_state(proc.pid, meta, log_path)
 
     hooks.emit(
         "recording_started",
