@@ -3,6 +3,7 @@
 # NOTE: no `from __future__ import annotations` — DSPy needs real type objects
 # in Signature fields, not ForwardRef strings.
 
+import json
 from datetime import UTC
 from pathlib import Path
 
@@ -10,8 +11,18 @@ import click
 from rich.console import Console
 
 from murmur import hooks
-from murmur.artifacts import ArtifactStore
+from murmur.artifacts import ArtifactStore, fingerprint_file
 from murmur.config import get_section
+from murmur.grounded_summary import (
+    DEFAULT_CHUNK_CHARACTERS,
+    PROMPT_VERSION,
+    clean_transcript,
+    generate_grounded_summary,
+    generation_timestamp,
+    load_source_transcript,
+    persist_cleaned_transcript,
+    render_summary,
+)
 
 console = Console()
 
@@ -28,6 +39,9 @@ Rules:
 - If a deadline or date is mentioned, include it.
 - Preserve technical terms and project names exactly as spoken.
 - If the transcript is unclear or low quality, note it rather than guessing.
+- Every attendee, claim, decision, question, and action item must include one or
+  more exact segment_ids from the supplied transcript. Unsupported output is discarded.
+- Label decisions and action items as explicit commitments or inferred suggestions.
 """
 
 
@@ -61,6 +75,18 @@ def _build_summarizer():
     import dspy
     import pydantic
 
+    class GroundedClaim(pydantic.BaseModel):
+        text: str = pydantic.Field(description="Factual claim supported by the source")
+        segment_ids: list[str] = pydantic.Field(description="Exact supporting segment IDs")
+
+    class Attendee(pydantic.BaseModel):
+        name: str = pydantic.Field(description="Exact participant display name")
+        segment_ids: list[str] = pydantic.Field(description="Segments where this person speaks")
+
+    class Decision(GroundedClaim):
+        commitment: str = pydantic.Field(description="explicit or inferred")
+        confidence: float = pydantic.Field(description="Grounding confidence from 0 to 1")
+
     class ActionItem(pydantic.BaseModel):
         task: str = pydantic.Field(description="What needs to be done")
         owner: str = pydantic.Field(description="Person responsible, or 'Unassigned' if unclear")
@@ -68,33 +94,36 @@ def _build_summarizer():
             default="", description="Due date if mentioned, otherwise empty"
         )
         priority: str = pydantic.Field(default="normal", description="high, normal, or low")
+        commitment: str = pydantic.Field(description="explicit or inferred")
+        confidence: float = pydantic.Field(description="Grounding confidence from 0 to 1")
+        segment_ids: list[str] = pydantic.Field(description="Exact supporting segment IDs")
 
     class MeetingSummary(pydantic.BaseModel):
         title: str = pydantic.Field(
             description="Short descriptive title for the meeting (5-10 words)"
         )
-        executive_summary: str = pydantic.Field(
-            description="2-3 sentence overview of what the meeting was about and its outcome"
+        attendees: list[Attendee] = pydantic.Field(
+            default_factory=list, description="People supported as present by speaking segments"
         )
-        key_decisions: list[str] = pydantic.Field(
+        executive_summary: list[GroundedClaim] = pydantic.Field(
             default_factory=list,
-            description="Decisions that were made, each as a concise bullet",
+            description="Two or three grounded overview claims",
+        )
+        topics: list[GroundedClaim] = pydantic.Field(
+            default_factory=list,
+            description="Important grounded topics",
+        )
+        decisions: list[Decision] = pydantic.Field(
+            default_factory=list,
+            description="Decisions made or suggestions inferred",
+        )
+        open_questions: list[GroundedClaim] = pydantic.Field(
+            default_factory=list,
+            description="Unresolved questions supported by source segments",
         )
         action_items: list[ActionItem] = pydantic.Field(
             default_factory=list,
-            description="Tasks assigned or volunteered during the meeting",
-        )
-        discussion_points: list[str] = pydantic.Field(
-            default_factory=list,
-            description="Important topics discussed, grouped logically",
-        )
-        open_questions: list[str] = pydantic.Field(
-            default_factory=list,
-            description="Unresolved questions or topics deferred to later",
-        )
-        attendees: list[str] = pydantic.Field(
-            default_factory=list,
-            description="People who spoke or were mentioned as present",
+            description="Tasks assigned, volunteered, or clearly suggested",
         )
 
     # Resolve annotations so DSPy sees real types, not ForwardRef
@@ -103,7 +132,9 @@ def _build_summarizer():
     class SummarizeTranscript(dspy.Signature):
         """Analyze a meeting transcript and produce a structured summary."""
 
-        transcript: str = dspy.InputField(desc="Raw meeting transcript text")
+        stage: str = dspy.InputField(desc="final, map, or reduce")
+        transcript: str = dspy.InputField(desc="Segment-labelled source or partial summaries")
+        glossary: str = dspy.InputField(desc="Authoritative term mappings as JSON")
         summary: MeetingSummary = dspy.OutputField(
             desc=("Structured meeting summary with decisions, action items, and discussion points")
         )
@@ -112,8 +143,8 @@ def _build_summarizer():
         def __init__(self):
             self.summarize = dspy.ChainOfThought(SummarizeTranscript)
 
-        def forward(self, transcript):
-            return self.summarize(transcript=transcript)
+        def forward(self, stage, transcript, glossary):
+            return self.summarize(stage=stage, transcript=transcript, glossary=glossary)
 
     _summarizer_cache = MeetingSummarizer()
     return _summarizer_cache
@@ -222,46 +253,13 @@ def _get_system_prompt(file_path=None):
 
 
 def _render_markdown(summary):
-    """Render a MeetingSummary to clean markdown."""
-    lines = [f"# {summary.title}", "", summary.executive_summary, ""]
-
-    if summary.attendees:
-        lines += ["## Attendees", ""]
-        lines += [f"- {a}" for a in summary.attendees]
-        lines += [""]
-
-    if summary.key_decisions:
-        lines += ["## Key Decisions", ""]
-        lines += [f"- {d}" for d in summary.key_decisions]
-        lines += [""]
-
-    if summary.action_items:
-        lines += [
-            "## Action Items",
-            "",
-            "| Task | Owner | Deadline | Priority |",
-            "|------|-------|----------|----------|",
-        ]
-        for item in summary.action_items:
-            deadline = item.deadline or "\u2014"
-            lines.append(f"| {item.task} | {item.owner} | {deadline} | {item.priority} |")
-        lines += [""]
-
-    if summary.discussion_points:
-        lines += ["## Discussion Points", ""]
-        lines += [f"- {p}" for p in summary.discussion_points]
-        lines += [""]
-
-    if summary.open_questions:
-        lines += ["## Open Questions", ""]
-        lines += [f"- {q}" for q in summary.open_questions]
-        lines += [""]
-
-    return "\n".join(lines)
+    """Render a validated grounded summary to Markdown."""
+    payload = summary.model_dump(mode="json") if hasattr(summary, "model_dump") else summary
+    return render_summary(payload)
 
 
-def _llm_generate(model, transcript, file_path=None):
-    """Run the DSPy summarizer and return rendered markdown."""
+def _llm_generate(model, stage, transcript, glossary, file_path=None):
+    """Run one DSPy map, reduce, or final generation call and return JSON."""
     import dspy
 
     _load_env()
@@ -269,18 +267,22 @@ def _llm_generate(model, transcript, file_path=None):
     dspy.configure(lm=lm, adapter=dspy.JSONAdapter())
 
     summarizer = _build_summarizer()
-    result = summarizer(transcript=transcript)
-    return _render_markdown(result.summary)
+    result = summarizer(stage=stage, transcript=transcript, glossary=json.dumps(glossary))
+    return result.summary.model_dump(mode="json")
 
 
 def _find_transcript(file_path):
-    """Given an audio or transcript file, find the transcript .txt file."""
+    """Find canonical JSON first, with derived and legacy text fallbacks."""
     file_path = Path(file_path)
-    if file_path.suffix == ".txt":
+    if file_path.suffix in (".json", ".md", ".txt"):
         return file_path
 
     store = ArtifactStore(file_path)
-    for transcript_path in (store.path("transcript.md"), store.path("transcript.txt")):
+    for transcript_path in (
+        store.path("transcript.json"),
+        store.path("transcript.md"),
+        store.path("transcript.txt"),
+    ):
         if transcript_path.exists():
             return transcript_path
 
@@ -296,38 +298,84 @@ def _find_transcript(file_path):
     raise SystemExit(1)
 
 
-def _summarize_file(transcript_path: Path, model_name: str) -> Path:
-    """Generate and persist a summary with durable job state."""
-    transcript = transcript_path.read_text()
-    if not transcript.strip():
-        raise ValueError("Transcript is empty, nothing to summarize.")
-
-    store = ArtifactStore.for_input(transcript_path)
+def _summarize_file(
+    transcript_path: Path,
+    model_name: str,
+    *,
+    glossary: dict[str, str] | None = None,
+    max_characters: int = DEFAULT_CHUNK_CHARACTERS,
+) -> Path:
+    """Generate grounded JSON/Markdown while preserving source and cleaned layers."""
+    store, source, source_path = load_source_transcript(transcript_path)
+    cleaned = clean_transcript(source)
+    cleaned_json, cleaned_markdown = persist_cleaned_transcript(store, cleaned, source_path)
+    source_fingerprint = fingerprint_file(source_path)
+    glossary = glossary or {}
+    parameters = {
+        "prompt_version": PROMPT_VERSION,
+        "source_sha256": source_fingerprint["sha256"],
+        "glossary": glossary,
+        "max_chunk_characters": max_characters,
+    }
     summary_path = store.path("summary.md")
+    summary_json_path = store.path("summary.json")
+    previous = store.jobs().get("jobs", {}).get("summarize:litellm", {})
+    compatible_resume = bool(
+        previous.get("model") == model_name and previous.get("parameters") == parameters
+    )
     _, should_run = store.begin_job(
         "summarize",
         "litellm",
         model=model_name,
-        parameters={"prompt_version": 1},
-        input_paths=[transcript_path],
-        output_paths=[summary_path],
-        output_artifacts=["summary_markdown"],
+        parameters=parameters,
+        input_paths=[source_path, cleaned_json],
+        output_paths=[summary_json_path, summary_path, cleaned_json, cleaned_markdown],
+        output_artifacts=[
+            "summary_json",
+            "summary_markdown",
+            "cleaned_transcript_json",
+            "cleaned_transcript_markdown",
+        ],
+        resume=compatible_resume,
     )
     if not should_run:
         return summary_path
 
     try:
-        summary = _llm_generate(model_name, transcript, file_path=str(transcript_path))
-        summary_path = store.write_text("summary.md", summary)
+        summary, run = generate_grounded_summary(
+            cleaned,
+            lambda stage, content, terms: _llm_generate(
+                model_name,
+                stage,
+                content,
+                terms,
+                file_path=str(source_path),
+            ),
+            glossary=glossary,
+            max_characters=max_characters,
+        )
+        generated_at = generation_timestamp()
+        provenance = {
+            "provider": "litellm",
+            "model": model_name,
+            "prompt_version": PROMPT_VERSION,
+            "source_transcript": str(source_path),
+            "source_sha256": source_fingerprint["sha256"],
+            "glossary": glossary,
+            "generated_at": generated_at,
+            "generation": run,
+        }
+        summary["metadata"] = provenance
+        summary_json_path = store.write_json("summary.json", summary)
+        summary_path = store.write_text("summary.md", render_summary(summary))
         store.register_artifact(
-            "summary_markdown",
-            summary_path,
-            kind="meeting_summary",
-            provenance={
-                "provider": "litellm",
-                "model": model_name,
-                "parameters": {"prompt_version": 1},
-            },
+            "summary_json",
+            summary_json_path,
+            kind="grounded_meeting_summary",
+            provenance=provenance,
+        )
+        store.register_artifact(
+            "summary_markdown", summary_path, kind="meeting_summary", provenance=provenance
         )
         store.complete_job("summarize", "litellm")
         return summary_path
@@ -341,6 +389,16 @@ def _summarize_file(transcript_path: Path, model_name: str) -> Path:
 # ---------------------------------------------------------------------------
 
 
+def _parse_glossary(configured, entries) -> dict[str, str]:
+    glossary = dict(configured) if isinstance(configured, dict) else {}
+    for entry in entries:
+        source, separator, canonical = entry.partition("=")
+        if not separator or not source.strip() or not canonical.strip():
+            raise click.ClickException("Glossary entries must use SPOKEN=CANONICAL format.")
+        glossary[source.strip()] = canonical.strip()
+    return glossary
+
+
 def register(cli):
     """Register the summarize command and hook."""
 
@@ -352,15 +410,25 @@ def register(cli):
         default=None,
         help=f"LLM model (default: {DEFAULT_MODEL}). Any litellm model string.",
     )
-    def summarize(file, model):
+    @click.option(
+        "--glossary",
+        "glossary_entries",
+        multiple=True,
+        help="Authoritative SPOKEN=CANONICAL term mapping (repeatable).",
+    )
+    @click.option(
+        "--max-chars",
+        type=click.IntRange(min=100),
+        default=None,
+        help="Maximum transcript characters per map call.",
+    )
+    def summarize(file, model, glossary_entries, max_chars):
         """Summarize a transcript using an LLM.
 
-        FILE can be a transcript (.txt) or an audio file — if given an audio
-        file, the command looks for a sibling .txt transcript automatically.
+        FILE can be canonical transcript JSON, derived text, or an audio file.
 
-        Uses DSPy with chain-of-thought reasoning to produce structured output:
-        title, executive summary, key decisions, action items (with owner,
-        deadline, priority), discussion points, and open questions.
+        Uses DSPy to produce a grounded, citation-validated summary with
+        attendees, topics, decisions, open questions, and action items.
 
         Requires: uv pip install murmur[ai]
         """
@@ -369,20 +437,24 @@ def register(cli):
 
         cfg = get_section("summarize")
         model_name = model or cfg.get("model", DEFAULT_MODEL)
+        glossary = _parse_glossary(cfg.get("glossary", {}), glossary_entries)
+        chunk_characters = max_chars or cfg.get("max_chunk_characters", DEFAULT_CHUNK_CHARACTERS)
 
         transcript_path = _find_transcript(file)
-        transcript = transcript_path.read_text()
-        if not transcript.strip():
-            console.print("[yellow]Transcript is empty, nothing to summarize.[/yellow]")
-            return
 
         console.print(f"[bold]Summarizing[/bold] {transcript_path} (model={model_name})")
 
-        summary_path = _summarize_file(transcript_path, model_name)
+        summary_path = _summarize_file(
+            transcript_path,
+            model_name,
+            glossary=glossary,
+            max_characters=chunk_characters,
+        )
         summary = summary_path.read_text()
 
         console.print(f"\n[bold green]Summary saved:[/bold green] {summary_path}")
         console.print(f"\n{summary}")
+        hooks.emit("summary_complete", summary_path=str(summary_path), source_file=file)
 
     # Auto-summarize on transcription_complete if configured
     cfg = get_section("summarize")
@@ -393,12 +465,19 @@ def register(cli):
                 return
             model_name = cfg.get("model", DEFAULT_MODEL)
             transcript_path = Path(transcript_path)
-            transcript = transcript_path.read_text()
-            if not transcript.strip():
-                return
 
             console.print(f"\n[bold]Auto-summarizing[/bold] {transcript_path}")
-            summary_path = _summarize_file(transcript_path, model_name)
+            summary_path = _summarize_file(
+                transcript_path,
+                model_name,
+                glossary=cfg.get("glossary", {}),
+                max_characters=cfg.get("max_chunk_characters", DEFAULT_CHUNK_CHARACTERS),
+            )
             console.print(f"[bold green]Auto-summary saved:[/bold green] {summary_path}")
+            hooks.emit(
+                "summary_complete",
+                summary_path=str(summary_path),
+                source_file=kwargs.get("audio_path"),
+            )
 
         hooks.on("transcription_complete", _auto_summarize)

@@ -146,8 +146,12 @@ overlap_seconds = 2
 
 [summarize]
 auto = true          # auto-summarize after transcription
-model = "llama3"     # ollama model
-ollama_url = "http://localhost:11434"
+model = "gemini/gemini-3-flash-preview"
+max_chunk_characters = 24000
+
+[summarize.glossary]
+k8s = "Kubernetes"
+Soo-jata = "Sujata"
 
 [diarize]
 hf_token = "hf_..."  # hugging face token for pyannote
@@ -163,9 +167,13 @@ manifest.json
 jobs.json
 raw-responses/
 speakers/
-transcript.txt
+transcript.json
+transcript.cleaned.json
+transcript.cleaned.md
 transcript.srt
+summary.json
 summary.md
+tasks.preview.json
 ```
 
 Writes are atomic. Completed outputs are checksum-validated before they are
@@ -238,6 +246,40 @@ murmur speakers delete default
 `speakers identify` exports candidate clips for unresolved labels. Adding one
 of those candidates to a profile is the explicit human confirmation step.
 
+### Grounded summaries and approved tasks
+
+Summaries are generated from the canonical segment-labelled transcript. Murmur
+keeps provider output untouched, writes deterministic whitespace cleanup and
+uncertainty annotations to separate `transcript.cleaned.*` artifacts, and
+validates generated claims against real segment IDs. Unsupported claims are
+dropped into the audit trail in `summary.json` rather than presented as facts.
+
+```bash
+murmur summarize meeting.mka \
+  --glossary Soo-jata=Sujata \
+  --glossary k8s=Kubernetes
+```
+
+The Markdown output includes attendees, executive summary, topics, decisions,
+open questions, action items, and transcription uncertainties. Decisions and
+actions show whether they were explicit or inferred, confidence, source
+excerpts, and links to timestamps in `transcript.cleaned.md`. Long calls use
+map-reduce when they exceed the configured character budget. `summary.json`
+records the model, prompt version, source hash, glossary, generation time, and
+map/reduce call plan so regeneration is auditable.
+
+Task backends are never changed by extraction alone. The first command writes
+an exact, reviewable `tasks.preview.json`; a second explicit command applies
+that same preview only if its source has not changed:
+
+```bash
+murmur tasks ingest meeting.mka
+# review tasks.preview.json
+murmur tasks ingest meeting.mka --approve
+```
+
+Automatic task extraction also stops at the preview stage.
+
 ## Plugins
 
 | Plugin | Command | What it does | Install |
@@ -245,9 +287,10 @@ of those candidates to a profile is the explicit human confirmation step.
 | **watch** | `murmur watch` | Detect meeting apps using the mic, notify + auto-record | built-in |
 | **memory** | `murmur memory` | Personal context for LLM summaries | built-in |
 | **tui** | `murmur tui` | Live dashboard with artifact viewer + generation | `murmur[tui]` |
-| **summarize** | `murmur summarize <file>` | DSPy structured summarization → `.summary.md` | `murmur[ai]` |
+| **summarize** | `murmur summarize <file>` | Grounded map-reduce summary with citations | `murmur[ai]` |
 | **transcribe** | `murmur transcribe <file>` | Local or resumable OpenAI transcription | `murmur[transcribe]` / `murmur[cloud]` |
 | **diarize** | `murmur diarize <file>` | Speaker diarization → `.rttm` + `.diarized.txt` | `murmur[diarize]` |
+| **tasks** | `murmur tasks ingest <file>` | Preview and explicitly approve task changes | `murmur[tasks]` |
 
 ## Development
 
@@ -274,5 +317,6 @@ the private process in [SECURITY.md](SECURITY.md).
 
 - [x] Automatic transcription (local Whisper / OpenAI)
 - [x] Speaker diarization with confirmed identity profiles
+- [x] Grounded summaries and approval-gated action items
 - [x] Auto-detect meeting apps and start recording
 - [ ] Web UI for browsing/searching recordings

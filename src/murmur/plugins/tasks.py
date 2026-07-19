@@ -785,10 +785,10 @@ def register(cli: click.Group) -> None:
     @tasks.command()
     @click.argument("file", type=click.Path(exists=True))
     @click.option(
-        "--dry-run",
+        "--approve",
         is_flag=True,
         default=False,
-        help="Preview extracted tasks without saving.",
+        help="Apply the exact previously generated preview.",
     )
     @click.option(
         "-m",
@@ -796,23 +796,30 @@ def register(cli: click.Group) -> None:
         default=None,
         help="LLM model override. Any litellm model string.",
     )
-    def ingest(file, dry_run, model):
-        """Extract tasks from a meeting transcript or summary.
+    def ingest(file, approve, model):
+        """Preview task changes, or explicitly approve a saved preview.
 
         FILE can be a .summary.md, .txt transcript, or an audio file -- if given
         an audio file, the command looks for a sibling summary or transcript.
 
         Requires: uv pip install murmur[tasks]
         """
-        from murmur.plugins.tasks_extract import _check_dep, _extract_tasks
+        from murmur.plugins.tasks_extract import _apply_task_preview, _check_dep, _extract_tasks
+
+        if approve:
+            count = _apply_task_preview(file)
+            if count:
+                console.print(f"[bold green]{count} approved task(s) created.[/bold green]")
+            else:
+                console.print("[dim]Preview was already applied or contained no tasks.[/dim]")
+            return
 
         if not _check_dep():
             raise SystemExit(1)
 
-        mode = "DRY RUN -- " if dry_run else ""
-        console.print(f"[bold]{mode}Extracting tasks from[/bold] {file}")
+        console.print(f"[bold]Preparing task preview from[/bold] {file}")
 
-        analysis = _extract_tasks(file, model=model, dry_run=dry_run)
+        analysis = _extract_tasks(file, model=model)
 
         # Display extracted tasks
         if analysis.new_tasks:
@@ -823,6 +830,7 @@ def register(cli: click.Group) -> None:
             table.add_column("Priority", width=8)
             table.add_column("Project", style="magenta")
             table.add_column("Deadline", style="red")
+            table.add_column("Basis", style="cyan", width=9)
             table.add_column("Conf", style="dim", width=5)
 
             pri_style = {
@@ -842,6 +850,7 @@ def register(cli: click.Group) -> None:
                     f"[{style}]{extracted.priority}[/]",
                     extracted.project,
                     extracted.deadline,
+                    extracted.commitment,
                     conf,
                 )
             console.print(table)
@@ -859,12 +868,11 @@ def register(cli: click.Group) -> None:
             for b in analysis.blockers_resolved:
                 console.print(f"  [green]\u2713[/green] {b}")
 
-        # Summary
         count = len(analysis.new_tasks)
-        if dry_run:
-            console.print(f"\n[dim]Dry run: {count} task(s) found, none saved.[/dim]")
-        elif count:
-            console.print(f"\n[bold green]{count} task(s) created.[/bold green]")
+        console.print(
+            f"\n[dim]Preview saved: {count} task change(s); no backend was modified. "
+            f"Review it, then run `murmur tasks ingest {file} --approve`.[/dim]"
+        )
 
     @tasks.command()
     @click.argument("task_id")
