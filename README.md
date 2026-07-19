@@ -44,6 +44,9 @@ uv pip install murmur[ai]
 # With transcription (faster-whisper)
 uv pip install murmur[transcribe]
 
+# With OpenAI cloud transcription
+uv pip install murmur[cloud]
+
 # Everything
 uv pip install murmur[all]
 
@@ -85,7 +88,7 @@ murmur watch
 # Auto-record when a meeting is detected
 murmur watch --auto-record
 
-# Auto-record with mic input (dual-channel: system left, mic right)
+# Auto-record with a listening mix plus separate mic and call-output tracks
 murmur watch --auto-record --mic
 
 # Faster polling (default: 5s)
@@ -131,8 +134,12 @@ apps = ["chrome", "firefox", "zoom", "teams", "slack", "discord"]
 
 [transcribe]
 auto = true          # auto-transcribe after recording
+provider = "local"   # local or openai
 model = "base"       # whisper model size
+openai_model = "gpt-4o-transcribe"
 language = "en"
+chunk_seconds = 600
+overlap_seconds = 2
 
 [summarize]
 auto = true          # auto-summarize after transcription
@@ -171,6 +178,26 @@ Job metadata records provider and model parameters but removes credentials and
 embedded audio data. Raw provider responses are kept separately from derived
 transcripts and summaries.
 
+### OpenAI cloud transcription
+
+OpenAI uploads are limited to 25 MB, so Murmur extracts the selected mixed
+stream into lossless 16 kHz mono WAV chunks, submits them sequentially, and
+writes every response before continuing. The default ten-minute chunks remain
+below the limit while a short overlap protects boundary words.
+
+```bash
+# Standard environment variable
+OPENAI_API_KEY=... murmur transcribe meeting.mka --provider openai
+
+# 1Password reference without placing the secret in config or shell history
+OPENAI_API_KEY='op://Personal/OPENAI_API_KEY/credential' \
+  op run -- murmur transcribe meeting.mka --provider openai --resume
+```
+
+Resume is enabled by default; use `--restart` only when you intentionally want
+to submit every chunk again. The source recording is opened read-only and is
+never rewritten.
+
 ## Plugins
 
 | Plugin | Command | What it does | Install |
@@ -179,7 +206,7 @@ transcripts and summaries.
 | **memory** | `murmur memory` | Personal context for LLM summaries | built-in |
 | **tui** | `murmur tui` | Live dashboard with artifact viewer + generation | `murmur[tui]` |
 | **summarize** | `murmur summarize <file>` | DSPy structured summarization → `.summary.md` | `murmur[ai]` |
-| **transcribe** | `murmur transcribe <file>` | Whisper transcription → `.txt` + `.srt` | `murmur[transcribe]` |
+| **transcribe** | `murmur transcribe <file>` | Local or resumable OpenAI transcription | `murmur[transcribe]` / `murmur[cloud]` |
 | **diarize** | `murmur diarize <file>` | Speaker diarization → `.rttm` + `.diarized.txt` | `murmur[diarize]` |
 
 ## Development
@@ -205,7 +232,7 @@ the private process in [SECURITY.md](SECURITY.md).
 
 ## Roadmap
 
-- [ ] Automatic transcription (Whisper local / Deepgram API)
+- [x] Automatic transcription (local Whisper / OpenAI)
 - [ ] Speaker diarization
 - [x] Auto-detect meeting apps and start recording
 - [ ] Web UI for browsing/searching recordings
