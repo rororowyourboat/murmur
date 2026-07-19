@@ -127,7 +127,7 @@ def register(cli: click.Group) -> None:
         "--mic",
         is_flag=True,
         default=False,
-        help="Include microphone in auto-recordings (dual-channel).",
+        help="Capture mix, microphone, and call output as a three-stream MKA.",
     )
     def watch(interval: int | None, auto_record: bool, audio_format: str, mic: bool):
         """Watch for meeting apps using the microphone.
@@ -175,7 +175,6 @@ def register(cli: click.Group) -> None:
                     if auto_record and not is_recording():
                         sink_id, monitor_name = resolve_sink(None)
                         tag = app_name.lower().replace(" ", "-")
-                        output_path = make_output_path(None, audio_format, tag)
 
                         mic_source = None
                         mic_id = None
@@ -183,6 +182,12 @@ def register(cli: click.Group) -> None:
                             from murmur.recorder import resolve_source
 
                             mic_id, mic_source = resolve_source(None)
+                        output_path = make_output_path(
+                            None,
+                            audio_format,
+                            tag,
+                            multitrack=mic_source is not None,
+                        )
 
                         record_background(
                             output_path,

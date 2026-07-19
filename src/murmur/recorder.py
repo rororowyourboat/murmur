@@ -24,6 +24,31 @@ console = Console()
 
 PID_FILE = Path.home() / ".cache" / "murmur" / "murmur.pid"
 
+MULTITRACK_FORMAT = "mka"
+MULTITRACK_STREAMS = (
+    {
+        "index": 0,
+        "title": "Mixed call",
+        "codec": "opus",
+        "source_role": "mixed",
+        "default": True,
+    },
+    {
+        "index": 1,
+        "title": "Microphone",
+        "codec": "opus",
+        "source_role": "microphone",
+        "default": False,
+    },
+    {
+        "index": 2,
+        "title": "Call output",
+        "codec": "opus",
+        "source_role": "call_output",
+        "default": False,
+    },
+)
+
 
 def _state_file() -> Path:
     return PID_FILE.with_name("recording.json")
@@ -104,18 +129,31 @@ def _recording_metadata(
     mic_source: str | None,
     mic_id: int | None,
 ) -> dict[str, Any]:
+    multitrack = mic_source is not None
+    effective_format = MULTITRACK_FORMAT if multitrack else audio_format
     meta: dict[str, Any] = {
         "status": "recording",
         "source": f"{monitor_name}.monitor",
         "sink_id": sink_id,
-        "format": audio_format,
+        "format": effective_format,
         "started_at": datetime.now().isoformat(),
         "output": str(output_path),
-        "dual_channel": mic_source is not None,
+        "dual_channel": multitrack,
+        "capture_mode": "multitrack" if multitrack else "system_output",
     }
     if mic_source:
+        meta["requested_format"] = audio_format
         meta["mic_source"] = mic_source
         meta["mic_id"] = mic_id
+        source_names = {
+            "mixed": [f"{monitor_name}.monitor", mic_source],
+            "microphone": [mic_source],
+            "call_output": [f"{monitor_name}.monitor"],
+        }
+        meta["stream_layout"] = [
+            {**stream, "source_names": source_names[stream["source_role"]]}
+            for stream in MULTITRACK_STREAMS
+        ]
     return meta
 
 
@@ -183,7 +221,8 @@ def _probe_media(output_path: Path) -> dict[str, Any] | None:
             "-v",
             "error",
             "-show_entries",
-            "format=duration,size:stream=index,codec_name,codec_type,channels",
+            "format=duration,size:stream=index,codec_name,codec_type,channels:"
+            "stream_tags=title:stream_disposition=default",
             "-of",
             "json",
             str(output_path),
@@ -209,13 +248,33 @@ def _finalize_recording(meta: dict[str, Any], error: str | None = None) -> dict[
     probe = _probe_media(output_path) if output_path.is_file() else None
     if probe is not None and output_path.stat().st_size > 0:
         format_info = probe.get("format", {})
+        streams = probe.get("streams", [])
+        planned_streams = {stream["index"]: stream for stream in meta.get("stream_layout", [])}
+        enriched_streams = []
+        for stream in streams:
+            planned = planned_streams.get(stream.get("index"), {})
+            probed_title = stream.get("tags", {}).get("title")
+            if not planned and not probed_title:
+                enriched_streams.append(stream)
+                continue
+            enriched_streams.append(
+                {
+                    **stream,
+                    "title": probed_title or planned.get("title"),
+                    "source_role": planned.get("source_role"),
+                    "source_names": planned.get("source_names", []),
+                    "default": bool(
+                        stream.get("disposition", {}).get("default", planned.get("default", False))
+                    ),
+                }
+            )
         finalized.update(
             {
                 "status": "recorded",
                 "duration_secs": float(format_info.get("duration", 0.0)),
                 "file_size_bytes": int(format_info.get("size", output_path.stat().st_size)),
                 "file_size_mb": round(output_path.stat().st_size / (1024 * 1024), 2),
-                "streams": probe.get("streams", []),
+                "streams": enriched_streams,
             }
         )
         finalized.pop("error", None)
@@ -361,31 +420,57 @@ def build_ffmpeg_cmd(
 ) -> list[str]:
     """Build FFmpeg command for recording.
 
-    If mic_source is provided, mixes system audio (left channel) and mic
-    (right channel) into a stereo file. This keeps compatibility with all
-    audio formats and lets diarization split channels later.
+    If mic_source is provided, produce a Matroska file with a default listening
+    mix plus independently selectable microphone and call-output streams.
     """
     system_source = f"{monitor_source}.monitor"
 
-    cmd = ["ffmpeg", "-y"]
+    cmd = ["ffmpeg", "-y", "-thread_queue_size", "1024"]
 
     # Input 0: system audio
     cmd += ["-f", "pulse", "-i", system_source]
 
     if mic_source:
-        # Input 1: microphone
-        cmd += ["-f", "pulse", "-i", mic_source]
-        # Mix into stereo: system=left, mic=right
+        if output_path.suffix.lower() != ".mka":
+            raise ValueError("Microphone capture requires an .mka output path.")
+        cmd += ["-thread_queue_size", "1024", "-f", "pulse", "-i", mic_source]
         cmd += [
             "-filter_complex",
-            "[0:a][1:a]amerge=inputs=2[out]",
+            "[0:a]aresample=async=1000:first_pts=0,asplit=2[call_mix][call_track];"
+            "[1:a]aresample=async=1000:first_pts=0,asplit=2[mic_mix][mic_track];"
+            "[call_mix][mic_mix]amix=inputs=2:duration=longest:dropout_transition=0:"
+            "normalize=0,alimiter=limit=0.95:level=false[mix]",
             "-map",
-            "[out]",
-            "-ac",
-            "2",
+            "[mix]",
+            "-map",
+            "[mic_track]",
+            "-map",
+            "[call_track]",
+            "-c:a",
+            "libopus",
+            "-b:a:0",
+            "128k",
+            "-b:a:1",
+            "96k",
+            "-b:a:2",
+            "96k",
+            "-metadata:s:a:0",
+            "title=Mixed call",
+            "-metadata:s:a:1",
+            "title=Microphone",
+            "-metadata:s:a:2",
+            "title=Call output",
+            "-disposition:a:0",
+            "default",
+            "-disposition:a:1",
+            "0",
+            "-disposition:a:2",
+            "0",
+            "-f",
+            "matroska",
         ]
-
-    cmd += _codec_args(audio_format)
+    else:
+        cmd += _codec_args(audio_format)
     cmd.append(str(output_path))
     return cmd
 
@@ -509,16 +594,19 @@ def make_output_path(
     output: str | None,
     audio_format: str,
     tag: str | None,
+    multitrack: bool = False,
 ) -> Path:
     """Build the output file path from options or generate one."""
     if output:
-        return Path(output)
+        path = Path(output)
+        return path.with_suffix(".mka") if multitrack else path
 
     recordings_dir = _default_output_dir()
     recordings_dir.mkdir(parents=True, exist_ok=True)
     timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
     tag_part = f"_{tag}" if tag else ""
-    return recordings_dir / f"meeting{tag_part}_{timestamp}.{audio_format}"
+    suffix = MULTITRACK_FORMAT if multitrack else audio_format
+    return recordings_dir / f"meeting{tag_part}_{timestamp}.{suffix}"
 
 
 def record_foreground(

@@ -138,7 +138,7 @@ def devices():
     "--mic",
     is_flag=True,
     default=False,
-    help="Also capture microphone input (dual-channel).",
+    help="Capture a three-stream MKA with mix, microphone, and call output.",
 )
 @click.option(
     "--mic-device",
@@ -156,19 +156,21 @@ def start(
 ):
     """Start recording system audio."""
     sink_id, monitor_name = resolve_sink(device)
-    output_path = make_output_path(output, audio_format, tag)
 
     mic_source = None
     mic_id = None
     if mic:
         mic_id, mic_source = resolve_source(mic_device)
+    output_path = make_output_path(output, audio_format, tag, multitrack=mic_source is not None)
 
     console.print("[bold green]Recording started[/bold green]")
     console.print(f"  System: [cyan]{monitor_name}.monitor[/cyan]")
     if mic_source:
         console.print(f"  Mic:    [cyan]{mic_source}[/cyan]")
     console.print(f"  Output: [cyan]{output_path}[/cyan]")
-    console.print(f"  Format: [cyan]{audio_format}[/cyan]")
+    console.print(
+        f"  Format: [cyan]{'mka (3 Opus streams)' if mic_source else audio_format}[/cyan]"
+    )
     console.print("\n[yellow]Press Ctrl+C to stop recording.[/yellow]\n")
 
     record_foreground(
@@ -252,7 +254,7 @@ def list_recordings():
     "--mic",
     is_flag=True,
     default=False,
-    help="Also capture microphone input (dual-channel).",
+    help="Capture a three-stream MKA with mix, microphone, and call output.",
 )
 @click.option(
     "--mic-device",
@@ -276,12 +278,12 @@ def toggle(audio_format: str, tag: str | None, mic: bool, mic_device: int | None
         return
 
     sink_id, monitor_name = resolve_sink(None)
-    output_path = make_output_path(None, audio_format, tag)
 
     mic_source = None
     mic_id = None
     if mic:
         mic_id, mic_source = resolve_source(mic_device)
+    output_path = make_output_path(None, audio_format, tag, multitrack=mic_source is not None)
 
     pid = record_background(
         output_path,

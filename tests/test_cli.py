@@ -152,3 +152,26 @@ def test_start_help_shows_mic_option():
     assert result.exit_code == 0
     assert "--mic" in result.output
     assert "--mic-device" in result.output
+
+
+def test_start_with_mic_uses_multitrack_mka(tmp_path):
+    requested = tmp_path / "call.flac"
+
+    with (
+        patch("murmur.cli.resolve_sink", return_value=(91, "alsa_output.test")),
+        patch("murmur.cli.resolve_source", return_value=(58, "alsa_input.mic")),
+        patch("murmur.cli.record_foreground") as record,
+    ):
+        result = runner.invoke(cli, ["start", "--mic", "--output", str(requested)])
+
+    assert result.exit_code == 0
+    assert "call.mka" in result.output
+    assert "3 Opus streams" in result.output
+    record.assert_called_once_with(
+        tmp_path / "call.mka",
+        "alsa_output.test",
+        91,
+        "flac",
+        mic_source="alsa_input.mic",
+        mic_id=58,
+    )

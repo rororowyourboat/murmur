@@ -21,7 +21,7 @@ from murmur.recorder import (
     stop_recording,
 )
 
-AUDIO_SUFFIXES = {".flac", ".mp3", ".wav", ".ogg", ".m4a", ".opus"}
+AUDIO_SUFFIXES = {".flac", ".mp3", ".wav", ".ogg", ".m4a", ".opus", ".mka"}
 
 
 # ---------------------------------------------------------------------------
