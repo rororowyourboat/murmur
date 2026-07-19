@@ -161,9 +161,12 @@ class ArtifactStore:
         _atomic_write_text(output, content)
         return output
 
-    def write_json(self, relative: str | Path, payload: dict[str, Any]) -> Path:
+    def write_json(
+        self, relative: str | Path, payload: dict[str, Any], *, sanitize: bool = False
+    ) -> Path:
         output = self.path(relative)
-        _atomic_write_json(output, payload)
+        persisted = _sanitize(payload) if sanitize else payload
+        _atomic_write_json(output, persisted)
         return output
 
     def _source_fingerprint(self, previous: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -386,6 +389,7 @@ class ArtifactStore:
         *,
         parameters: dict[str, Any] | None = None,
         output_artifacts: list[str] | None = None,
+        resume: bool = True,
     ) -> tuple[dict[str, Any], bool]:
         """Start one resumable job unit, skipping checksum-valid completed work."""
         payload = self.jobs()
@@ -397,7 +401,8 @@ class ArtifactStore:
         previous = units.get(unit_id, {})
         outputs = output_artifacts or []
         if (
-            previous.get("status") == "complete"
+            resume
+            and previous.get("status") == "complete"
             and outputs
             and all(self.artifact_valid(name) for name in outputs)
         ):

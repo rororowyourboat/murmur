@@ -27,6 +27,8 @@ def test_transcribe_registers_command():
     grp = _make_group()
     transcribe.register(grp)
     assert "transcribe" in [c for c in grp.commands]
+    param_names = [parameter.name for parameter in grp.commands["transcribe"].params]
+    assert {"provider", "resume", "chunk_seconds", "overlap_seconds"} <= set(param_names)
 
 
 def test_summarize_registers_command():
@@ -147,6 +149,46 @@ def test_local_transcription_persists_artifacts_and_resumes(tmp_path):
     jobs = json.loads((artifact_dir / "jobs.json").read_text())["jobs"]
     assert jobs["transcribe:faster-whisper"]["status"] == "complete"
     assert FakeWhisperModel.calls == 1
+
+
+def test_transcribe_openai_provider_dispatches_cloud_pipeline(tmp_path):
+    audio = tmp_path / "meeting.flac"
+    audio.write_bytes(b"audio")
+    grp = _make_group()
+    transcribe.register(grp)
+
+    with (
+        patch.object(transcribe, "transcribe_openai", return_value={"segments": []}) as cloud,
+        patch.object(transcribe.hooks, "emit"),
+    ):
+        result = runner.invoke(
+            grp,
+            [
+                "transcribe",
+                str(audio),
+                "--provider",
+                "openai",
+                "--model",
+                "gpt-4o-transcribe",
+                "--chunk-seconds",
+                "300",
+                "--overlap-seconds",
+                "1",
+                "--prompt",
+                "project glossary",
+            ],
+        )
+
+    assert result.exit_code == 0
+    cloud.assert_called_once_with(
+        str(audio),
+        model="gpt-4o-transcribe",
+        language="en",
+        prompt="project glossary",
+        chunk_seconds=300.0,
+        overlap_seconds=1.0,
+        resume=True,
+    )
 
 
 def test_diarization_persists_canonical_outputs(tmp_path):

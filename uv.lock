@@ -1407,6 +1407,7 @@ all = [
     { name = "google-auth-httplib2" },
     { name = "google-auth-oauthlib" },
     { name = "litellm" },
+    { name = "openai" },
     { name = "pyannote-audio" },
     { name = "tasklib" },
     { name = "textual" },
@@ -1417,6 +1418,9 @@ calendar = [
     { name = "google-auth-httplib2" },
     { name = "google-auth-oauthlib" },
 ]
+cloud = [
+    { name = "openai" },
+]
 dev = [
     { name = "bandit" },
     { name = "dspy" },
@@ -1426,6 +1430,7 @@ dev = [
     { name = "google-auth-oauthlib" },
     { name = "litellm" },
     { name = "mypy" },
+    { name = "openai" },
     { name = "pre-commit" },
     { name = "pyannote-audio" },
     { name = "pytest" },
@@ -1467,12 +1472,14 @@ requires-dist = [
     { name = "murmur", extras = ["ai"], marker = "extra == 'tasks'" },
     { name = "murmur", extras = ["all"], marker = "extra == 'dev'" },
     { name = "murmur", extras = ["calendar"], marker = "extra == 'all'" },
+    { name = "murmur", extras = ["cloud"], marker = "extra == 'all'" },
     { name = "murmur", extras = ["diarize"], marker = "extra == 'all'" },
     { name = "murmur", extras = ["tasks"], marker = "extra == 'all'" },
     { name = "murmur", extras = ["tasks-tw"], marker = "extra == 'all'" },
     { name = "murmur", extras = ["transcribe"], marker = "extra == 'all'" },
     { name = "murmur", extras = ["tui"], marker = "extra == 'all'" },
     { name = "mypy", marker = "extra == 'dev'", specifier = ">=1.10" },
+    { name = "openai", marker = "extra == 'cloud'", specifier = ">=1.0" },
     { name = "pre-commit", marker = "extra == 'dev'", specifier = ">=4.0" },
     { name = "pyannote-audio", marker = "extra == 'diarize'", specifier = ">=3.0" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.0" },
@@ -1483,7 +1490,7 @@ requires-dist = [
     { name = "textual", marker = "extra == 'tui'", specifier = ">=8.1.1" },
     { name = "torch", marker = "extra == 'diarize'" },
 ]
-provides-extras = ["tui", "ai", "transcribe", "diarize", "calendar", "tasks", "tasks-tw", "all", "dev"]
+provides-extras = ["tui", "ai", "transcribe", "cloud", "diarize", "calendar", "tasks", "tasks-tw", "all", "dev"]
 
 [[package]]
 name = "mypy"
