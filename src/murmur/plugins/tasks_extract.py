@@ -8,6 +8,7 @@ from pathlib import Path
 import click
 from rich.console import Console
 
+from murmur.artifacts import ArtifactStore
 from murmur.config import get_section
 
 console = Console()
@@ -207,7 +208,16 @@ def _find_input_file(file_path):
             return file_path
         raise click.ClickException(f"File not found: {file_path}")
 
-    # For audio files, look for .summary.md first, then .txt
+    store = ArtifactStore(file_path)
+    for canonical in (
+        store.path("summary.md"),
+        store.path("transcript.md"),
+        store.path("transcript.txt"),
+    ):
+        if canonical.exists():
+            return canonical
+
+    # Backward compatibility for sibling artifacts from older Murmur versions.
     summary_path = file_path.with_suffix(".summary.md")
     if summary_path.exists():
         return summary_path

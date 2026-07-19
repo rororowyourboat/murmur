@@ -359,6 +359,9 @@ def test_finalize_recording_uses_ffprobe_metadata(tmp_path):
     assert finalized["duration_secs"] == 12.5
     assert finalized["file_size_bytes"] == 5
     assert finalized["streams"] == probe["streams"]
+    assert finalized["recording_id"] == "meeting"
+    assert (tmp_path / "artifacts/meeting/manifest.json").exists()
+    assert (tmp_path / "artifacts/meeting/jobs.json").exists()
     assert json.loads(output.with_suffix(".json").read_text())["status"] == "recorded"
     emit.assert_called_once_with(
         "recording_saved",

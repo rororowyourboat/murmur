@@ -282,8 +282,15 @@ def _finalize_recording(meta: dict[str, Any], error: str | None = None) -> dict[
         finalized["status"] = "failed"
         finalized["error"] = error or "FFmpeg did not produce a valid media file."
 
+    if finalized["status"] == "recorded":
+        from murmur.artifacts import ArtifactStore
+
+        store = ArtifactStore(output_path)
+        finalized["recording_id"] = store.recording_id
+        finalized["artifacts_dir"] = str(store.directory)
     _write_json_atomic(meta_path, finalized)
     if finalized["status"] == "recorded":
+        store.ensure_manifest(finalized)
         hooks.emit(
             "recording_saved",
             output_path=str(output_path),

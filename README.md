@@ -121,6 +121,7 @@ Optional TOML config at `~/.config/murmur/config.toml`:
 ```toml
 [recording]
 output_dir = "~/Recordings/meetings"
+artifacts_dir = "~/Recordings/artifacts"
 format = "flac"
 
 [watch]
@@ -141,6 +142,34 @@ ollama_url = "http://localhost:11434"
 [diarize]
 hf_token = "hf_..."  # hugging face token for pyannote
 ```
+
+## Artifacts and processing jobs
+
+Each recording gets a content-fingerprinted manifest and durable job state. By
+default, generated files live under `~/Recordings/artifacts/<recording-id>/`:
+
+```text
+manifest.json
+jobs.json
+raw-responses/
+speakers/
+transcript.txt
+transcript.srt
+summary.md
+```
+
+Writes are atomic. Completed outputs are checksum-validated before they are
+reused, so interrupted commands can be run again without repeating valid work.
+
+```bash
+murmur jobs status <recording>
+murmur jobs status <recording> --json
+murmur jobs retry <recording> [--job transcribe]
+```
+
+Job metadata records provider and model parameters but removes credentials and
+embedded audio data. Raw provider responses are kept separately from derived
+transcripts and summaries.
 
 ## Plugins
 

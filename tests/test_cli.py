@@ -1,9 +1,11 @@
 """Tests for CLI commands using Click's test runner."""
 
+import json
 from unittest.mock import patch
 
 from click.testing import CliRunner
 
+from murmur.artifacts import ArtifactStore
 from murmur.cli import cli
 
 runner = CliRunner()
@@ -175,3 +177,30 @@ def test_start_with_mic_uses_multitrack_mka(tmp_path):
         mic_source="alsa_input.mic",
         mic_id=58,
     )
+
+
+def test_jobs_status_creates_and_prints_canonical_state(tmp_path):
+    recording = tmp_path / "meeting.flac"
+    recording.write_bytes(b"audio")
+
+    result = runner.invoke(cli, ["jobs", "status", str(recording), "--json"])
+
+    assert result.exit_code == 0
+    payload = json.loads(result.output)
+    assert payload["manifest"]["recording"] == str(recording.resolve())
+    assert payload["jobs"] == {}
+    assert (tmp_path / "artifacts" / "meeting" / "manifest.json").exists()
+
+
+def test_jobs_retry_resets_failed_job(tmp_path):
+    recording = tmp_path / "meeting.flac"
+    recording.write_bytes(b"audio")
+    store = ArtifactStore(recording)
+    store.begin_job("transcribe", "openai")
+    store.fail_job("transcribe", "openai", "temporary failure")
+
+    result = runner.invoke(cli, ["jobs", "retry", str(recording), "--job", "transcribe"])
+
+    assert result.exit_code == 0
+    assert "transcribe:openai" in result.output
+    assert store.jobs()["jobs"]["transcribe:openai"]["status"] == "pending"
