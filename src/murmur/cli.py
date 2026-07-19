@@ -12,6 +12,7 @@ from rich.console import Console
 from rich.table import Table
 
 from murmur import hooks
+from murmur.artifacts import ArtifactStore, CorruptStateError
 from murmur.recorder import (
     get_pipewire_sinks,
     get_pipewire_sources,
@@ -324,6 +325,63 @@ def status():
         console.print("[dim]Not recording.[/dim]")
 
 
+@cli.group()
+def jobs():
+    """Inspect and retry durable recording-processing jobs."""
+
+
+@jobs.command(name="status")
+@click.argument("recording", type=click.Path(exists=True, path_type=Path))
+@click.option("--json", "as_json", is_flag=True, help="Print machine-readable job state.")
+def jobs_status(recording: Path, as_json: bool):
+    """Show processing status and canonical artifacts for RECORDING."""
+    try:
+        store = ArtifactStore(recording)
+        manifest = store.ensure_manifest()
+        payload = store.jobs()
+    except CorruptStateError as error:
+        raise click.ClickException(str(error)) from error
+
+    if as_json:
+        click.echo(json.dumps({"manifest": manifest, "jobs": payload["jobs"]}, indent=2))
+        return
+
+    console.print(f"[bold]Recording:[/bold] {recording}")
+    console.print(f"[bold]Artifacts:[/bold] {store.directory}")
+    if not payload["jobs"]:
+        console.print("[dim]No processing jobs yet.[/dim]")
+        return
+
+    table = Table(title="Processing jobs")
+    table.add_column("Job", style="cyan")
+    table.add_column("Status")
+    table.add_column("Attempts", justify="right")
+    table.add_column("Last error", style="red")
+    for identifier, job in sorted(payload["jobs"].items()):
+        table.add_row(
+            identifier,
+            job.get("status", "unknown"),
+            str(job.get("attempt_count", 0)),
+            job.get("last_error") or "",
+        )
+    console.print(table)
+
+
+@jobs.command(name="retry")
+@click.argument("recording", type=click.Path(exists=True, path_type=Path))
+@click.option("--job", "job_type", help="Retry only this job type or job ID.")
+def jobs_retry(recording: Path, job_type: str | None):
+    """Reset retryable failed jobs so their processing command can resume."""
+    try:
+        retried = ArtifactStore(recording).retry_failed(job_type)
+    except CorruptStateError as error:
+        raise click.ClickException(str(error)) from error
+    if not retried:
+        console.print("[yellow]No matching retryable failed jobs.[/yellow]")
+        return
+    console.print(f"[green]Queued for retry:[/green] {', '.join(retried)}")
+
+
 @cli.command(name="import")
 @click.argument("file", type=click.Path(exists=True))
 @click.option(
@@ -360,8 +418,12 @@ def import_audio(file: str, tag: str | None):
         "original_path": str(source),
         "output": str(dest),
     }
+    store = ArtifactStore(dest)
+    meta["recording_id"] = store.recording_id
+    meta["artifacts_dir"] = str(store.directory)
     meta_path = dest.with_suffix(".json")
     meta_path.write_text(json.dumps(meta, indent=2))
+    store.ensure_manifest(meta)
 
     hooks.emit(
         "recording_saved",

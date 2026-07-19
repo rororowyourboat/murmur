@@ -6,6 +6,7 @@ import click
 from rich.console import Console
 
 from murmur import hooks
+from murmur.artifacts import ArtifactStore
 from murmur.config import get_section
 
 console = Console()
@@ -34,32 +35,85 @@ def _format_srt_time(seconds: float) -> str:
 
 
 def _transcribe_file(file_path: str, model_size: str, lang: str) -> None:
-    """Run transcription on a file, producing .txt and .srt outputs."""
+    """Run local transcription into the canonical artifact directory."""
     from pathlib import Path
 
     from faster_whisper import WhisperModel
 
     console.print(f"[bold]Transcribing[/bold] {file_path} (model={model_size}, lang={lang})")
 
-    whisper = WhisperModel(model_size, compute_type="int8")
-    segments_iter, _info = whisper.transcribe(file_path, language=lang)
-
     audio_path = Path(file_path)
-    transcript_path = audio_path.with_suffix(".txt")
-    srt_path = audio_path.with_suffix(".srt")
+    store = ArtifactStore(audio_path)
+    output_names = ["transcript_raw_local", "transcript_text", "transcript_srt"]
+    transcript_path = store.path("transcript.txt")
+    srt_path = store.path("transcript.srt")
+    raw_path = store.path("raw-responses/transcribe-faster-whisper.json")
+    _, should_run = store.begin_job(
+        "transcribe",
+        "faster-whisper",
+        model=model_size,
+        parameters={"language": lang, "compute_type": "int8"},
+        output_paths=[raw_path, transcript_path, srt_path],
+        output_artifacts=output_names,
+    )
+    if not should_run:
+        console.print(f"[green]Transcript already complete:[/green] {transcript_path}")
+        hooks.emit(
+            "transcription_complete",
+            audio_path=str(audio_path),
+            transcript_path=str(transcript_path),
+        )
+        return
 
-    segments = list(segments_iter)
+    try:
+        whisper = WhisperModel(model_size, compute_type="int8")
+        segments_iter, info = whisper.transcribe(file_path, language=lang)
+        segments = list(segments_iter)
 
-    with transcript_path.open("w") as txt_f, srt_path.open("w") as srt_f:
+        text_lines = []
+        srt_blocks = []
+        raw_segments = []
         for i, segment in enumerate(segments, 1):
             line = f"[{segment.start:.1f}s -> {segment.end:.1f}s] {segment.text}"
-            txt_f.write(line + "\n")
+            text_lines.append(line)
             console.print(f"  [dim]{line}[/dim]")
+            srt_blocks.append(
+                f"{i}\n{_format_srt_time(segment.start)} --> "
+                f"{_format_srt_time(segment.end)}\n{segment.text.strip()}\n"
+            )
+            raw_segments.append(
+                {"id": i, "start": segment.start, "end": segment.end, "text": segment.text}
+            )
 
-            # SRT format
-            srt_f.write(f"{i}\n")
-            srt_f.write(f"{_format_srt_time(segment.start)} --> {_format_srt_time(segment.end)}\n")
-            srt_f.write(f"{segment.text.strip()}\n\n")
+        raw_path = store.write_json(
+            "raw-responses/transcribe-faster-whisper.json",
+            {
+                "provider": "faster-whisper",
+                "model": model_size,
+                "language": getattr(info, "language", lang),
+                "segments": raw_segments,
+            },
+        )
+        transcript_path = store.write_text("transcript.txt", "\n".join(text_lines) + "\n")
+        srt_path = store.write_text("transcript.srt", "\n".join(srt_blocks))
+        provenance = {
+            "provider": "faster-whisper",
+            "model": model_size,
+            "parameters": {"language": lang, "compute_type": "int8"},
+        }
+        store.register_artifact(
+            "transcript_raw_local", raw_path, kind="raw_provider_response", provenance=provenance
+        )
+        store.register_artifact(
+            "transcript_text", transcript_path, kind="transcript", provenance=provenance
+        )
+        store.register_artifact(
+            "transcript_srt", srt_path, kind="subtitles", provenance=provenance
+        )
+        store.complete_job("transcribe", "faster-whisper")
+    except Exception as error:
+        store.fail_job("transcribe", "faster-whisper", error)
+        raise
 
     hooks.emit(
         "transcription_complete",

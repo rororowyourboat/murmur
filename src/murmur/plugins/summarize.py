@@ -10,6 +10,7 @@ import click
 from rich.console import Console
 
 from murmur import hooks
+from murmur.artifacts import ArtifactStore
 from murmur.config import get_section
 
 console = Console()
@@ -278,16 +279,61 @@ def _find_transcript(file_path):
     if file_path.suffix == ".txt":
         return file_path
 
-    transcript_path = file_path.with_suffix(".txt")
-    if transcript_path.exists():
-        return transcript_path
+    store = ArtifactStore(file_path)
+    for transcript_path in (store.path("transcript.md"), store.path("transcript.txt")):
+        if transcript_path.exists():
+            return transcript_path
+
+    legacy_path = file_path.with_suffix(".txt")
+    if legacy_path.exists():
+        return legacy_path
 
     console.print(
         f"[red]No transcript found for {file_path.name}.[/red]\n"
-        f"Expected: [cyan]{transcript_path}[/cyan]\n"
+        f"Expected a canonical transcript under: [cyan]{store.directory}[/cyan]\n"
         f"Run [cyan]murmur transcribe {file_path}[/cyan] first."
     )
     raise SystemExit(1)
+
+
+def _summarize_file(transcript_path: Path, model_name: str) -> Path:
+    """Generate and persist a summary with durable job state."""
+    transcript = transcript_path.read_text()
+    if not transcript.strip():
+        raise ValueError("Transcript is empty, nothing to summarize.")
+
+    store = ArtifactStore.for_input(transcript_path)
+    summary_path = store.path("summary.md")
+    _, should_run = store.begin_job(
+        "summarize",
+        "litellm",
+        model=model_name,
+        parameters={"prompt_version": 1},
+        input_paths=[transcript_path],
+        output_paths=[summary_path],
+        output_artifacts=["summary_markdown"],
+    )
+    if not should_run:
+        return summary_path
+
+    try:
+        summary = _llm_generate(model_name, transcript, file_path=str(transcript_path))
+        summary_path = store.write_text("summary.md", summary)
+        store.register_artifact(
+            "summary_markdown",
+            summary_path,
+            kind="meeting_summary",
+            provenance={
+                "provider": "litellm",
+                "model": model_name,
+                "parameters": {"prompt_version": 1},
+            },
+        )
+        store.complete_job("summarize", "litellm")
+        return summary_path
+    except Exception as error:
+        store.fail_job("summarize", "litellm", error)
+        raise
 
 
 # ---------------------------------------------------------------------------
@@ -332,10 +378,8 @@ def register(cli):
 
         console.print(f"[bold]Summarizing[/bold] {transcript_path} (model={model_name})")
 
-        summary = _llm_generate(model_name, transcript, file_path=str(transcript_path))
-
-        summary_path = transcript_path.with_suffix(".summary.md")
-        summary_path.write_text(summary)
+        summary_path = _summarize_file(transcript_path, model_name)
+        summary = summary_path.read_text()
 
         console.print(f"\n[bold green]Summary saved:[/bold green] {summary_path}")
         console.print(f"\n{summary}")
@@ -348,15 +392,13 @@ def register(cli):
             if not _check_dep():
                 return
             model_name = cfg.get("model", DEFAULT_MODEL)
-            transcript = Path(transcript_path).read_text()
+            transcript_path = Path(transcript_path)
+            transcript = transcript_path.read_text()
             if not transcript.strip():
                 return
 
             console.print(f"\n[bold]Auto-summarizing[/bold] {transcript_path}")
-            summary = _llm_generate(model_name, transcript, file_path=transcript_path)
-
-            summary_path = Path(transcript_path).with_suffix(".summary.md")
-            summary_path.write_text(summary)
+            summary_path = _summarize_file(transcript_path, model_name)
             console.print(f"[bold green]Auto-summary saved:[/bold green] {summary_path}")
 
         hooks.on("transcription_complete", _auto_summarize)

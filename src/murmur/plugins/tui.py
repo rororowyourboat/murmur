@@ -10,6 +10,7 @@ from pathlib import Path
 import click
 from rich.text import Text
 
+from murmur.artifacts import ArtifactStore
 from murmur.config import get_section
 from murmur.recorder import (
     _default_output_dir,
@@ -56,17 +57,29 @@ def _get_duration(rec: Path) -> str:
     return "\u2014"
 
 
-def _artifact_exists(rec: Path, suffix: str) -> bool:
+def _artifact_path(rec: Path, suffix: str) -> Path:
+    canonical = {
+        ".txt": "transcript.txt",
+        ".srt": "transcript.srt",
+        ".summary.md": "summary.md",
+        ".diarized.txt": "speakers/diarization.txt",
+        ".rttm": "speakers/diarization.rttm",
+    }
+    if suffix in canonical:
+        path = ArtifactStore(rec).path(canonical[suffix])
+        if path.exists():
+            return path
     if suffix == ".summary.md":
-        return rec.with_suffix("").with_suffix(".summary.md").exists()
-    return rec.with_suffix(suffix).exists()
+        return rec.with_suffix("").with_suffix(".summary.md")
+    return rec.with_suffix(suffix)
+
+
+def _artifact_exists(rec: Path, suffix: str) -> bool:
+    return _artifact_path(rec, suffix).exists()
 
 
 def _read_artifact(rec: Path, suffix: str) -> str | None:
-    if suffix == ".summary.md":
-        path = rec.with_suffix("").with_suffix(".summary.md")
-    else:
-        path = rec.with_suffix(suffix)
+    path = _artifact_path(rec, suffix)
     if not path.exists():
         return None
     return path.read_text()
@@ -437,7 +450,7 @@ def _build_app(audio_format: str):
                 from murmur.plugins.summarize import (
                     DEFAULT_MODEL,
                     _find_transcript,
-                    _llm_generate,
+                    _summarize_file,
                 )
 
                 cfg = get_section("summarize")
@@ -447,9 +460,9 @@ def _build_app(audio_format: str):
                 if not transcript.strip():
                     self.notify("Transcript is empty", severity="warning")
                     return
-                summary = await self._run_in_thread(_llm_generate, model_name, transcript)
-                summary_path = transcript_path.with_suffix(".summary.md")
-                summary_path.write_text(summary)
+                summary_path = await self._run_in_thread(
+                    _summarize_file, transcript_path, model_name
+                )
                 self.notify(f"Summary ready: {summary_path.name}")
             except SystemExit:
                 self.notify(
@@ -465,7 +478,7 @@ def _build_app(audio_format: str):
         async def _run_diarize(self, rec: Path) -> None:
             """Run diarization in a background worker."""
             try:
-                from murmur.plugins.diarize import _check_dep
+                from murmur.plugins.diarize import _check_dep, _diarize_file
 
                 if not _check_dep():
                     self.notify(
@@ -485,22 +498,7 @@ def _build_app(audio_format: str):
                     )
                     return
 
-                from pyannote.audio import Pipeline
-
-                pipeline = await self._run_in_thread(
-                    Pipeline.from_pretrained,
-                    "pyannote/speaker-diarization-3.1",
-                    use_auth_token=token,
-                )
-                diarization = await self._run_in_thread(pipeline, str(rec))
-
-                rttm_path = rec.with_suffix(".rttm")
-                diarized_path = rec.with_suffix(".diarized.txt")
-                with rttm_path.open("w") as f:
-                    diarization.write_rttm(f)
-                with diarized_path.open("w") as f:
-                    for turn, _, speaker in diarization.itertracks(yield_label=True):
-                        f.write(f"[{turn.start:.1f}s -> {turn.end:.1f}s] {speaker}\n")
+                _, diarized_path, _ = await self._run_in_thread(_diarize_file, str(rec), token)
 
                 self.notify(f"Diarization ready: {diarized_path.name}")
             except Exception as e:
