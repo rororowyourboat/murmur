@@ -310,8 +310,13 @@ make fix           # ruff check --fix
 ```
 
 Contributions are welcome. See [CONTRIBUTING.md](CONTRIBUTING.md) for the small
-issue → branch → draft PR → CI workflow. Please report vulnerabilities using
-the private process in [SECURITY.md](SECURITY.md).
+issue → branch → draft PR → CI workflow, and follow the
+[Code of Conduct](CODE_OF_CONDUCT.md). Please report vulnerabilities using the
+private process in [SECURITY.md](SECURITY.md).
+
+No license has been selected yet. The explicit decision is deferred in
+[#33](https://github.com/rororowyourboat/murmur/issues/33); no reuse license
+should be inferred until the maintainer chooses one.
 
 ## Roadmap
 
